@@ -90,6 +90,7 @@ python services/stt-worker/stt_worker.py --model-dir "models/stt/<模型目录>"
 ## 开发与验证
 
 ```powershell
+npm run build -w @rcc/shared
 npm run typecheck
 npm run lint
 npm run build
