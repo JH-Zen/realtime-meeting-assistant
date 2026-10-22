@@ -14,7 +14,13 @@
 - 会话文件：支持 JSON 导出、导入和历史会话问答。
 - 可切换模拟/真实 STT、LLM 和 embedding，提供调试面板及 Windows 打包脚本。
 
-## 快速开始
+## Windows 安装包
+
+- 下载 [Releases](https://github.com/JH-Zen/realtime-meeting-assistant/releases) 中的 `RCC-Core-Setup.exe`，安装后运行 `RCC.bat`。
+- 核心包自带 Node.js，默认使用模拟模式；真实识别及检索需要另外准备运行环境与模型。
+- 当前为未签名预览版，Windows 可能显示来源提示；重装会保留已有 `.env` 配置。
+
+## 从源码开始
 
 需要 Node.js 24+ 和 npm；真实语音识别另需 Python 及模型文件。
 
@@ -62,7 +68,7 @@ python services/stt-worker/stt_worker.py --model-dir "models/stt/<模型目录>"
 - 阶段摘要尚不可见，整体摘要选择可能遗漏较早内容。
 - 模拟模式暂停后仍产生转写；缺少密钥时 LLM 仍可能回落模拟模式。
 - API/WS 缺少访问凭证和严格来源校验；部分配置缺少范围校验。
-- 前端端口固定为 8787；安装升级可能覆盖配置，退出流程仍需完善。
+- 前端端口固定为 8787；安装包尚未签名，退出流程仍需完善。
 - 部分历史验证脚本仅存于临时目录，无法随仓库完整复现。
 
 ## 能力限制

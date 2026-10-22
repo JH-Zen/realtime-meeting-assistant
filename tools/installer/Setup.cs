@@ -163,6 +163,9 @@ internal static class Setup
                         throw new InvalidOperationException("压缩包里有条目想写到安装目录外面：" + entry.FullName);
                     }
 
+                    // A reinstall updates application files but must preserve the user's API key and settings.
+                    if (string.Equals(name, ".env", StringComparison.OrdinalIgnoreCase) && File.Exists(destination)) continue;
+
                     Directory.CreateDirectory(Path.GetDirectoryName(destination));
                     using (Stream source = entry.Open())
                     using (FileStream sink = File.Create(destination))

@@ -174,6 +174,11 @@ async function stageNode(outDir) {
     await mkdir(join(outDir, "runtime"), { recursive: true });
     await cp(process.execPath, dest);
   }
+  const license = ["LICENSE", "LICENSE.md"]
+    .map((name) => join(dirname(process.execPath), name))
+    .find((path) => existsSync(path));
+  if (!license) throw new Error("Node.js runtime LICENSE is missing beside node.exe; cannot redistribute it");
+  await cp(license, join(outDir, "runtime", "LICENSE"));
   return dest;
 }
 
@@ -208,6 +213,7 @@ async function stageCore(outDir) {
   });
   await cp(join(repo, "docs"), join(outDir, "docs"), { recursive: true });
   await cp(join(repo, "README.md"), join(outDir, "README.md"));
+  await cp(join(repo, "LICENSE"), join(outDir, "LICENSE"));
 
   // `.env.example` is the template; the install gets a real `.env` with the shipped defaults. No key is
   // ever written here — the one in this repo's own `.env` stays in this repo.
