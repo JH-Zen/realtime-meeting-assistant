@@ -86,6 +86,7 @@ const cscArgs = [
   `/resource:${manifest},rcc-manifest.txt`,
   `/lib:${frameworkDir}`,
   "/reference:System.Windows.Forms.dll",
+  "/reference:System.Drawing.dll",
   `/reference:${fromGac("System.IO.Compression.dll")}`,
   `/reference:${fromGac("System.IO.Compression.FileSystem.dll")}`,
   join(repo, "tools", "installer", "Setup.cs"),

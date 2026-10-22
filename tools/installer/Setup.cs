@@ -16,6 +16,9 @@ internal static class Setup
     private const string ManifestResource = "rcc-manifest.txt";
     private const string TargetPrefix = "--target=";
 
+    // The shell folder picker needs STA. Quiet installs do not open it, so testing only --quiet
+    // misses a double-click launch that waits forever without displaying a folder-selection window.
+    [STAThread]
     private static int Main(string[] args)
     {
         // The box's console codepage is 936 while this file is UTF-8, so without this every Chinese message the
@@ -43,6 +46,7 @@ internal static class Setup
         string launcher = Value(manifest, "launcher", "RCC.bat");
 
         if (target == null) target = Environment.GetEnvironmentVariable("RCC_TARGET");
+        bool interactive = target == null && !quiet;
         if (target == null && !quiet) target = AskForFolder(DefaultTarget());
         if (target == null) target = DefaultTarget();
         if (target.Length == 0)
@@ -84,6 +88,13 @@ internal static class Setup
 
         Console.WriteLine("完成：" + files + " 个文件，" + (bytes / 1048576) + " MiB。");
         Console.WriteLine("下一步：运行 " + Path.Combine(target, launcher));
+        if (interactive)
+        {
+            MessageBox.Show("安装完成。\n\n安装位置：" + Path.GetFullPath(target) +
+                "\n\n运行 " + launcher + " 即可打开实时会议助手。", "实时会议助手",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return 0;
+        }
         Pause(quiet);
         return 0;
     }
@@ -98,13 +109,37 @@ internal static class Setup
 
     private static string AskForFolder(string initial)
     {
-        using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+        // Do not use the shell folder browser: a broken shell extension can block it before any
+        // window appears. A plain path form needs no shell enumeration and keeps installation usable.
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        using (Form dialog = new Form())
+        using (Label label = new Label())
+        using (TextBox path = new TextBox())
+        using (Button install = new Button())
+        using (Button cancel = new Button())
         {
-            dialog.Description = "选择安装位置";
-            dialog.RootFolder = Environment.SpecialFolder.MyComputer;
-            try { dialog.SelectedPath = initial; } catch (Exception) { }
+            dialog.Text = "实时会议助手 - 安装";
+            dialog.ClientSize = new System.Drawing.Size(520, 155);
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.StartPosition = FormStartPosition.CenterScreen;
+            label.Text = "安装目录（可以直接修改路径）：";
+            label.SetBounds(20, 18, 480, 22);
+            path.Text = initial;
+            path.SetBounds(20, 47, 480, 26);
+            install.Text = "安装";
+            install.SetBounds(310, 102, 90, 30);
+            install.DialogResult = DialogResult.OK;
+            cancel.Text = "取消";
+            cancel.SetBounds(410, 102, 90, 30);
+            cancel.DialogResult = DialogResult.Cancel;
+            dialog.Controls.AddRange(new Control[] { label, path, install, cancel });
+            dialog.AcceptButton = install;
+            dialog.CancelButton = cancel;
             if (dialog.ShowDialog() != DialogResult.OK) { Console.WriteLine("已取消，没有安装任何文件。"); Environment.Exit(2); }
-            return dialog.SelectedPath;
+            return path.Text.Trim();
         }
     }
 
