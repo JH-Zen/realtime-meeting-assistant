@@ -1,0 +1,4 @@
+# sherpa-onnx is the STT engine itself (Apache-2.0); `websockets` is the transport for the local
+# service (BSD-3-Clause). Both are registered in docs/THIRD_PARTY.md.
+sherpa-onnx==1.13.8
+websockets==17.3

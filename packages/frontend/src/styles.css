@@ -1,0 +1,380 @@
+:root {
+  --bg: #101418;
+  --panel: #171d23;
+  --panel-2: #1e262e;
+  --line: #2b3540;
+  --text: #e6edf3;
+  --muted: #97a5b3;
+  --accent: #4c9aff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app__body {
+  display: grid;
+  grid-template-columns: 60% 40%;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+}
+
+.app__map,
+.app__side {
+  min-height: 0;
+  min-width: 0;
+}
+
+.app__side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mindmap {
+  position: relative;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.mindmap__warning {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  min-height: 0;
+}
+
+.panel > h2 {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel__body {
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-size: 14px;
+  min-height: 0;
+}
+
+.subtitles {
+  flex: 1.2;
+}
+
+.answers {
+  flex: 1;
+}
+
+.subtitle {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 6px;
+  line-height: 1.5;
+}
+
+.subtitle__clock {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  flex: none;
+  padding-top: 2px;
+}
+
+.subtitle--live {
+  color: var(--accent);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.notice {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.controls__buttons,
+.controls__status {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Why the microphone is not producing text — long enough that it needs its own row. */
+.controls__notice {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--warn);
+  font-size: 12px;
+}
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06101c;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.badge em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.badge--ok {
+  color: var(--ok);
+}
+
+.badge--warn {
+  color: var(--warn);
+}
+
+.badge--bad {
+  color: var(--bad);
+}
+
+.ask {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ask textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.answer {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+}
+
+.answer__q {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.answer__a {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.answer__meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.citation {
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+
+.tag-bad {
+  color: var(--bad);
+}
+
+.cursor {
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.debug {
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: 6px 12px;
+}
+
+.debug__inline {
+  margin-left: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.debug__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.debug__grid h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.debug__grid ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.debug__grid code {
+  color: var(--accent);
+}
+
+.mind-node {
+  width: 172px;
+  /* Must equal NODE_H in state/layout.ts. The layout reserves one NODE_H per row, so an unbounded
+     box height makes neighbouring rows collide: a two-line title paints 87px tall, the constant
+     said 40. The clamps below are what keep this promise true for any text the model returns. */
+  height: 88px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.mind-node.depth-0 {
+  border-color: var(--accent);
+}
+
+.mind-node__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.mind-node__title {
+  font-weight: 600;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.mind-node__toggle {
+  flex: none;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.mind-node__summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+}
+
+.mind-node__meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
