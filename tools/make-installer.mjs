@@ -81,7 +81,16 @@ const mebibytes = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 const payload = join(work, "payload.zip");
 console.log(`压包 ${staged} → ${payload}`);
 const zipped = run(tar, ["-a", "-c", "-f", payload, "-C", staged, "."]);
-if (zipped.status !== 0) fail(`tar 压包失败：${zipped.stderr.slice(0, 600)}`);
+if (zipped.status !== 0) {
+  // Some Windows Server images crash inside their bundled bsdtar while creating this archive.
+  // Recreate only our validated build payload with the same .NET ZIP reader/writer used by Setup.
+  console.warn(`System32 tar 压包退出 ${zipped.status}，改用 .NET ZIP：${zipped.stderr.slice(0, 600)}`);
+  rmSync(payload, { force: true });
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const script = `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory(${quote(staged)}, ${quote(payload)}, [System.IO.Compression.CompressionLevel]::Optimal, $false)`;
+  const fallback = run(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]);
+  if (fallback.status !== 0 || !existsSync(payload)) fail(`.NET ZIP 压包失败（${fallback.status}）：${fallback.stderr.slice(0, 600)}`);
+}
 console.log(`payload.zip = ${mebibytes(statSync(payload).size)}`);
 
 // ── 2. manifest + compile ─────────────────────────────────────────────────────────────────────────

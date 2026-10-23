@@ -41,7 +41,7 @@ jobs:
           }
           npm test -- --maxWorkers=2
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-      - name: Package desktop installer
+      - name: Package desktop installer with Windows ZIP fallback
         shell: pwsh
         run: |
           npm run package:desktop
