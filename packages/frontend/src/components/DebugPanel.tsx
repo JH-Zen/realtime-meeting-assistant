@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useGraphStore } from "../state/graphStore";
 import { useSessionStore } from "../state/sessionStore";
 import { API_BASE } from "../config";
+import { apiFetch } from "../net/api";
 
 interface DebugSnapshot {
   bus: { events: Record<string, number> };
@@ -27,7 +28,7 @@ export function DebugPanel() {
     let alive = true;
     const load = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/debug`);
+        const response = await apiFetch(`${API_BASE}/api/debug`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         if (alive) {
           setSnapshot((await response.json()) as DebugSnapshot);

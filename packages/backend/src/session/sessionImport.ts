@@ -68,6 +68,7 @@ export async function importSessionDocument(
   }
   if (parsed.issues.length > 0) return { ok: false, issues: parsed.issues };
   const document = parsed.document;
+  if (document.audioGaps?.length && !repos.audioGaps) return { ok: false, issues: ["此运行环境不支持保存音频缺口记录，未导入以避免丢失信息。"] };
 
   if (repos.sessions.get(target.sessionId)) {
     return { ok: false, issues: [`会话 "${target.sessionId}" 已存在，导入会覆盖它已有的行`] };
@@ -92,9 +93,11 @@ export async function importSessionDocument(
       ...(document.session.title !== undefined ? { title: document.session.title } : {}),
       startedAt: document.session.startedAt,
       endedAt: document.session.endedAt ?? now,
+      ...(document.session.durationSec === undefined ? {} : { durationSec: document.session.durationSec }),
       status: "completed",
     });
     for (const segment of finals) repos.transcripts.appendFinal({ ...segment, sessionId: target.sessionId });
+    for (const gap of document.audioGaps ?? []) repos.audioGaps?.save({ ...gap, sessionId: target.sessionId });
     for (const node of document.nodes) repos.graphs.upsertNode(target.sessionId, node);
     repos.graphs.saveEdges(target.sessionId, document.edges);
     for (const [nodeId, position] of positions) {

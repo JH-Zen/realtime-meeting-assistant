@@ -14,7 +14,9 @@ import {
   SttStatusSchema,
   SummaryUpdatedSchema,
 } from "./events.js";
-import { MindMapEdgeSchema, MindMapNodeSchema, TranscriptSegmentSchema } from "./types.js";
+import { MindMapEdgeSchema, MindMapNodeSchema, SessionSchema, TranscriptSegmentSchema } from "./types.js";
+import { SessionExchangeSchema } from "./sessionDocument.js";
+import { AudioCaptureSchema, AudioCaptureEndSchema } from "./audio.js";
 
 /**
  * The WebSocket wire protocol between backend and frontend. Server events are the same objects
@@ -27,6 +29,7 @@ export const ServerEventSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("session.snapshot"),
     sessionId: z.string().min(1).optional(),
+    session: SessionSchema.optional(),
     /**
      * `viewing` is a history opened from an exported file: readable and askable, but no capture is
      * attached and the record buttons must not offer to continue it (§13 OPEN-10). It is a state and
@@ -53,6 +56,12 @@ export const ServerEventSchema = z.discriminatedUnion("kind", [
     positions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })),
   }),
   z.object({ kind: z.literal("transcript.snapshot"), sessionId: z.string().min(1), segments: z.array(TranscriptSegmentSchema) }),
+  z.object({
+    kind: z.literal("answers.snapshot"),
+    sessionId: z.string().min(1),
+    exchanges: z.array(SessionExchangeSchema),
+    pendingQuestionIds: z.array(z.string()).default([]),
+  }),
   z.object({ kind: z.literal("transcript.partial"), segment: TranscriptSegmentSchema }),
   z.object({ kind: z.literal("transcript.final"), segment: TranscriptSegmentSchema }),
   z.object({ kind: z.literal("recording.started"), ...RecordingStartedSchema.shape }),
@@ -77,9 +86,12 @@ export const ClientCommandSchema = z.discriminatedUnion("cmd", [
   z.object({ cmd: z.literal("recording.pause") }),
   z.object({ cmd: z.literal("recording.resume") }),
   z.object({ cmd: z.literal("recording.stop") }),
-  z.object({ cmd: z.literal("audio.chunk"), seq: z.number().int().min(0), pcmBase64: z.string() }),
+  z.object({ cmd: z.literal("session.close") }),
+  z.object({ cmd: z.literal("audio.chunk"), seq: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), pcmBase64: z.string().max(128_000), capture: AudioCaptureSchema.optional() }),
+  z.object({ cmd: z.literal("audio.capture.end"), capture: AudioCaptureEndSchema }),
   z.object({
     cmd: z.literal("question.ask"),
+    sessionId: z.string().min(1).optional(),
     questionId: z.string().min(1),
     text: z.string().min(1).max(4000),
   }),

@@ -164,6 +164,16 @@ body {
   font-size: 12px;
 }
 
+.session-history { flex-basis: 100%; min-width: 0; font-size: 13px; }
+.session-history__current { margin: 0 0 6px; color: var(--muted); overflow-wrap: anywhere; }
+.session-history summary { cursor: pointer; color: var(--accent); width: fit-content; }
+.session-history__tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; color: var(--muted); }
+.session-history__list { max-height: 200px; overflow: auto; padding: 0; margin: 8px 0; list-style: none; }
+.session-history__list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding: 8px 0; }
+.session-history__list strong, .session-history__list span { display: block; overflow-wrap: anywhere; }
+.session-history__list span { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.session-history__list button { flex: none; }
+
 button {
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -378,3 +388,23 @@ button.primary {
   color: var(--muted);
   font-size: 11px;
 }
+:root .retrieval-recovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+
+.retrieval-recovery__detail {
+  color: var(--muted);
+}
+
+:root .audio-gaps { padding: 6px 15px; border-bottom: 1px solid #2c3944; color: #c6d1dc; font-size: 13px; }
+:root .audio-gaps details[open] { max-height: 180px; overflow: auto; }
+:root .audio-gaps summary { cursor: pointer; }
+.recovery-tasks { padding: 10px 16px; border-bottom: 1px solid var(--border, #2c3944); font-size: 13px; }
+.recovery-tasks summary { cursor: pointer; }
+.recovery-tasks p, .recovery-tasks li { margin-block: 8px; }

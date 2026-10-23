@@ -10,22 +10,34 @@
   "workspaces": [
     "packages/shared",
     "packages/backend",
-    "packages/frontend"
+    "packages/frontend",
+    "packages/desktop"
   ],
   "scripts": {
-    "build": "npm run build -w @rcc/shared && npm run build -w @rcc/backend && npm run build -w @rcc/frontend",
+    "build": "npm run build -w @rcc/shared && npm run build -w @rcc/backend && npm run build -w @rcc/frontend && npm run build -w @rcc/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "check": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev:backend": "npm run dev -w @rcc/backend",
-    "dev:frontend": "npm run dev -w @rcc/frontend"
+    "dev:backend": "node --watch --import tsx packages/backend/src/index.ts",
+    "dev:frontend": "npm run dev -w @rcc/frontend",
+    "dev:desktop": "npm run build && node tools/dev-desktop.mjs",
+    "package:desktop": "npm run build && node tools/package.mjs --tier=desktop && node tools/make-installer.mjs --desktop",
+    "test:desktop": "node tools/verify-desktop.mjs",
+    "test:browser": "node tools/verify-browser.mjs",
+    "setup:stt-cpu": "powershell.exe -NoProfile -File tools/setup-stt-cpu.ps1",
+    "test:stt-cpu": "node tools/verify-stt-cpu.mjs",
+    "version:desktop": "node tools/desktop-version.mjs",
+    "test:installer-wizard": "node tools/verify-installer-wizard.mjs",
+    "qoder:interactive": "cmd.exe /d /c start \"Qoder\" cmd.exe /d /k tools\\qoder-interactive.cmd"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
+    "@playwright/test": "1.64.1",
     "@types/node": "^24.0.0",
+    "electron": "45.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"

@@ -124,6 +124,7 @@ def validate_model_paths(args: argparse.Namespace) -> None:
 
 def build_recognizer(args: argparse.Namespace) -> sherpa_onnx.OnlineRecognizer:
     common = dict(
+        provider="cpu",
         num_threads=args.num_threads,
         sample_rate=args.sample_rate,
         enable_endpoint_detection=True,
@@ -182,6 +183,11 @@ class Session:
 
     async def flush(self) -> None:
         """End the recording: pop the final hypothesis instead of waiting for silence that never comes."""
+        if self.clock.now_sec > self.clock.segment_start_sec:
+            # The upstream online-decode example supplies 0.66 s of right context before input_finished.
+            # Without it a clipped stop loses spoken tail words. Padding is decoder context only and
+            # must not advance the clock that represents audio actually accepted from the microphone.
+            self.stream.accept_waveform(self.args.sample_rate, array.array("f", [0.0]) * int(0.66 * self.args.sample_rate))
         self.stream.input_finished()
         while self.recognizer.is_ready(self.stream):
             self.recognizer.decode_stream(self.stream)
@@ -208,6 +214,8 @@ def ready_message(args: argparse.Namespace) -> dict:
         "protocol": PROTOCOL_VERSION,
         "sampleRate": args.sample_rate,
         "model": args.model_name,
+        "provider": "cpu",
+        "numThreads": args.num_threads,
         "endpoint": {"rule1": args.rule1, "rule2": args.rule2, "rule3": args.rule3},
     }
 
@@ -224,9 +232,9 @@ async def serve(recognizer: sherpa_onnx.OnlineRecognizer, args: argparse.Namespa
             return
         session = Session(recognizer, args, lambda payload: connection.send(json.dumps(payload, ensure_ascii=False)))
         active = session
-        await connection.send(json.dumps(ready_message(args), ensure_ascii=False))
-        print(f"[stt] client connected — {args.model_name}", flush=True)
         try:
+            await connection.send(json.dumps(ready_message(args), ensure_ascii=False))
+            print(f"[stt] client connected — {args.model_name}", flush=True)
             async for message in connection:
                 if isinstance(message, (bytes, bytearray)):
                     await session.feed(bytes(message))
@@ -243,19 +251,24 @@ async def serve(recognizer: sherpa_onnx.OnlineRecognizer, args: argparse.Namespa
             active = None
             print("[stt] client disconnected", flush=True)
 
-    async with websockets.serve(handler, args.host, args.port, max_size=4 * 1024 * 1024):
-        print(f"[stt] listening ws://{args.host}:{args.port} model={args.model_name} threads={args.num_threads}", flush=True)
+    # The managed Node backend and command-line tools send no Origin. Browsers must use the protected
+    # application backend, rather than occupy this single-client decoder directly from another page.
+    async with websockets.serve(handler, args.host, args.port, origins=[None], max_size=4 * 1024 * 1024) as server:
+        port = server.sockets[0].getsockname()[1]
+        print(f"[stt] listening ws://{args.host}:{port} model={args.model_name} threads={args.num_threads} provider=cpu", flush=True)
         await asyncio.Future()
 
 
 def resample(raw: bytes, source_rate: int, target_rate: int) -> bytes:
+    if source_rate <= 0 or target_rate <= 0:
+        raise ValueError("sample rates must be positive")
     if source_rate == target_rate:
         return raw
     samples = array.array("h")
     samples.frombytes(raw)
     # Linear interpolation exists only so an 8 kHz test clip can be replayed; the microphone path
     # never lands here, because the AudioWorklet resamples before it encodes.
-    out = array.array("h", bytes(int(len(samples) / (target_rate / source_rate)) * BYTES_PER_FRAME))
+    out = array.array("h", [0]) * int(len(samples) * target_rate / source_rate)
     step = source_rate / target_rate
     for index in range(len(out)):
         position = index * step
@@ -339,6 +352,10 @@ def main() -> None:
     # mojibake. The WebSocket path sends UTF-8 JSON regardless; this only fixes what an operator sees.
     sys.stdout.reconfigure(encoding="utf-8")
     args = parse_args(sys.argv[1:])
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        raise SystemExit("STT worker must listen on a loopback address")
+    if not 0 <= args.port <= 65535 or args.num_threads < 1 or args.sample_rate < 1:
+        raise SystemExit("Invalid port, thread count, or sample rate")
     resolve_model_paths(args)
     validate_model_paths(args)
     args.model_name = args.model_name or Path(args.model_dir or args.tokens).name

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ModuleError, ServerEvent, SttConnection, TranscriptSegment } from "@rcc/shared";
+import type { ModuleError, ServerEvent, Session, SttConnection, TranscriptSegment } from "@rcc/shared";
 
 export type LinkState = "connecting" | "open" | "closed";
 /** `viewing` is a history opened from an exported file: askable, but not something this tab records. */
@@ -17,7 +17,7 @@ export interface Answer {
   done: boolean;
   degraded: boolean;
   /** Set instead of `text` when the server refused to answer, so the bubble never hangs. */
-  reject?: { reason: "busy" | "rate_limited"; message: string; retryAfterMs: number };
+  reject?: { reason: "busy" | "rate_limited" | "session_changed"; message: string; retryAfterMs: number };
   ttftMs?: number;
   durationMs?: number;
   startedAt?: number;
@@ -34,6 +34,7 @@ interface SessionStore {
   /** Dials that have failed since the last good connection; the badge says which one this is. */
   reconnectAttempts: number;
   sessionId: string | null;
+  session: Session | null;
   recording: RecordingState;
   elapsedSec: number;
   stt: { state: SttConnection; attempts: number; message: string | null };
@@ -51,8 +52,6 @@ interface SessionStore {
   setLink(link: LinkState, attempts?: number): void;
   noteDroppedFrame(): void;
   ask(questionId: string, text: string): void;
-  /** The Q&A a session already recorded, as finished bubbles (§13 OPEN-10). */
-  setHistoryAnswers(answers: Answer[]): void;
   clearErrors(): void;
 }
 
@@ -60,6 +59,7 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
   link: "connecting",
   reconnectAttempts: 0,
   sessionId: null,
+  session: null,
   recording: "idle",
   elapsedSec: 0,
   stt: { state: "idle", attempts: 0, message: null },
@@ -72,18 +72,23 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
   askedAt: {},
 
   apply: (event) => {
+    if (!belongsToSession(event, get().sessionId)) return;
     switch (event.kind) {
       case "session.snapshot": {
         // The snapshot frame is what every (re)connect begins with. Anything still unanswered here has
         // lost its stream — the server replays transcripts and graphs, never answers — so close it
         // instead of spinning forever. A token that does arrive later still heals the bubble.
-        const answers = get().answers.map((answer) => (answer.done ? answer : { ...answer, done: true }));
+        const changed = (event.sessionId ?? null) !== get().sessionId || event.state === "idle";
+        const answers = changed ? [] : get().answers.map((answer) => (answer.done ? answer : { ...answer, done: true }));
         set({
           sessionId: event.sessionId ?? null,
+          session: event.session ?? null,
           recording: event.state,
           elapsedSec: event.elapsedSec,
           stt: { state: event.stt, attempts: 0, message: null },
           answers,
+          partials: {},
+          ...(changed ? { finals: [], askedAt: {}, errors: [], bufferedSkips: 0 } : {}),
         });
         return;
       }
@@ -93,15 +98,36 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
       case "transcript.snapshot":
         set({ finals: event.segments, partials: {} });
         return;
+      case "answers.snapshot": {
+        const previous = new Map(get().answers.map((answer) => [answer.questionId, answer]));
+        const pending = new Set(event.pendingQuestionIds);
+        const answers: Answer[] = event.exchanges.map(({ question, answer }) => ({
+          ...previous.get(question.id),
+          questionId: question.id,
+          question: question.text,
+          text: answer?.text ?? (pending.has(question.id) ? previous.get(question.id)?.text ?? "" : ""),
+          done: answer !== null || !pending.has(question.id),
+          degraded: answer?.degraded ?? false,
+          citations: answer?.citations ?? [],
+          durationMs: answer?.durationMs,
+        }));
+        const askedAt = Object.fromEntries(Object.entries(get().askedAt).filter(([id]) => pending.has(id)));
+        set({ answers, askedAt });
+        return;
+      }
       case "recording.started":
         set({
           sessionId: event.sessionId,
+          session: { id: event.sessionId, startedAt: event.at, status: "recording" },
           recording: "recording",
           elapsedSec: 0,
+          stt: { state: "idle", attempts: 0, message: null },
           finals: [],
           partials: {},
           answers: [],
           askedAt: {},
+          errors: [],
+          bufferedSkips: 0,
         });
         return;
       case "recording.paused":
@@ -111,7 +137,7 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
         set({ recording: "recording", elapsedSec: event.elapsedSec });
         return;
       case "recording.stopped":
-        set({ recording: "idle", elapsedSec: event.durationSec });
+        set({ recording: "idle", elapsedSec: event.durationSec, partials: {}, stt: { state: "idle", attempts: 0, message: null } });
         return;
       case "stt.status": {
         // A recogniser that went away cannot finish the utterance it was mid-way through: the worker
@@ -142,6 +168,8 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
         set({ answers: upsertAnswer(get().answers, event.questionId, {}) });
         return;
       case "answer.token":
+        // Older servers omitted sessionId. Only an already known question may accept such a token.
+        if (!event.sessionId && !get().answers.some((answer) => answer.questionId === event.questionId)) return;
         set({
           answers: upsertAnswer(get().answers, event.questionId, {
             text: event.text,
@@ -190,11 +218,15 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
       answers: upsertAnswer(get().answers, questionId, { question: text }),
     }),
 
-  // A session switch has no question in flight, so the ask times go with the answers they belonged to.
-  setHistoryAnswers: (answers) => set({ answers, askedAt: {} }),
-
   clearErrors: () => set({ errors: [], bufferedSkips: 0 }),
 }));
+
+/** Selection/snapshot frames establish identity; all other scoped frames must match it. */
+export function belongsToSession(event: ServerEvent, sessionId: string | null): boolean {
+  if (event.kind === "session.snapshot" || event.kind === "recording.started") return true;
+  const owner = "sessionId" in event ? event.sessionId : "segment" in event ? event.segment.sessionId : undefined;
+  return owner === undefined || owner === sessionId;
+}
 
 function upsertAnswer(answers: Answer[], questionId: string, patch: Partial<Answer>): Answer[] {
   const existing = answers.find((answer) => answer.questionId === questionId);

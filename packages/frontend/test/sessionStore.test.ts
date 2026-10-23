@@ -17,6 +17,12 @@ describe("session store answers", () => {
     apply({ kind: "recording.started", sessionId: "s1", at: 1, source: "mock" });
   });
 
+  it("clears a previous STT failure when a new recording starts", () => {
+    apply({ kind: "stt.status", sessionId: "s1", state: "failed", attempts: 1, message: "previous failure" });
+    apply({ kind: "recording.started", sessionId: "s2", at: 2, source: "mock" });
+    expect(useSessionStore.getState().stt).toEqual({ state: "idle", attempts: 0, message: null });
+  });
+
   it("closes the question when the server refuses it", () => {
     useSessionStore.getState().ask("q-1", "刚问的问题");
 

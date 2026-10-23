@@ -1,6 +1,5 @@
 import { API_BASE } from "../config";
-import { resyncFromServer } from "./connection";
-import { useSessionStore, type Answer, type Citation } from "../state/sessionStore";
+import { apiFetch } from "./api";
 
 /**
  * The two HTTP surfaces that are not the bus (§13 OPEN-10): a session file leaving, and one arriving.
@@ -16,18 +15,6 @@ interface ImportCounts {
   nodes: number;
   embedded: number;
   embeddingError?: string;
-}
-
-interface ExchangeRow {
-  question: { id: string; text: string; createdAt: number; snapshotId: string };
-  answer: {
-    questionId: string;
-    text: string;
-    citations: Citation[];
-    durationMs: number;
-    degraded: boolean;
-    createdAt: number;
-  } | null;
 }
 
 export async function downloadSession(sessionId: string): Promise<string> {
@@ -71,8 +58,7 @@ export async function importSessionFile(file: File): Promise<string> {
   }
   if (!response.ok) throw new SessionFileError(`导入失败（HTTP ${response.status}）。`);
   const body = (await response.json()) as { opened: boolean; counts: ImportCounts };
-  if (!body.opened) throw new SessionFileError("会话已导入本机，但没能打开：服务端刚好开始了一段录音。");
-  resyncFromServer();
+  if (!body.opened) throw new SessionFileError("会话已导入本机；当前会议已变化，为保留你的操作未自动切换。可在“本机会议”中打开导入的副本。");
   const index =
     body.counts.embedded < body.counts.transcripts
       ? `，检索索引只建好 ${body.counts.embedded}/${body.counts.transcripts} 条，久远的内容可能答不上（${
@@ -82,33 +68,10 @@ export async function importSessionFile(file: File): Promise<string> {
   return `已打开历史会话：${body.counts.transcripts} 段原文、${body.counts.nodes} 个节点${index}`;
 }
 
-/**
- * The Q&A a session already recorded. Answers stream and are never replayed, so a tab that opens a
- * history has to read them out of the store instead — unanswered questions are skipped rather than
- * drawn as an empty bubble.
- */
-export async function loadHistoryAnswers(sessionId: string): Promise<void> {
-  const response = await request(`${API_BASE}/api/session/${sessionId}/questions`);
-  if (!response.ok) return;
-  const body = (await response.json()) as { exchanges: ExchangeRow[] };
-  const answers: Answer[] = body.exchanges
-    .filter((entry) => entry.answer !== null)
-    .map((entry) => ({
-      questionId: entry.question.id,
-      question: entry.question.text,
-      text: entry.answer?.text ?? "",
-      done: true,
-      degraded: entry.answer?.degraded ?? false,
-      citations: entry.answer?.citations ?? [],
-      durationMs: entry.answer?.durationMs,
-    }));
-  useSessionStore.getState().setHistoryAnswers(answers);
-}
-
 /** Fetch that turns "the backend is not there" into a sentence instead of a TypeError. */
 async function request(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, init);
+    return await apiFetch(url, init);
   } catch (error) {
     throw new SessionFileError(
       `连不上本机后端（${API_BASE}）：${error instanceof Error ? error.message : String(error)}`,

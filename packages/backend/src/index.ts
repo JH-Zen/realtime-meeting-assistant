@@ -7,6 +7,8 @@ import { SqliteGraphRepository } from "./store/graphRepository.js";
 import { SqliteSummaryRepository } from "./store/summaryRepository.js";
 import { SqliteEmbeddingRepository } from "./store/embeddingRepository.js";
 import { SqliteQaRepository } from "./store/qaRepository.js";
+import { SqliteAudioGapRepository } from "./store/audioGapRepository.js";
+import { SqliteRecoveryTaskRepository } from "./store/recoveryTaskRepository.js";
 import { MockLLMProvider } from "./llm/MockLLMProvider.js";
 import { OpenAICompatProvider } from "./llm/OpenAICompatProvider.js";
 import type { LLMProvider } from "./llm/LLMProvider.js";
@@ -19,13 +21,33 @@ import { createServer } from "./server/apiServer.js";
 import { deriveModules, missingEmbeddingModules } from "./observability/modules.js";
 import { log } from "./observability/log.js";
 import { createLoopDelayMonitor } from "./observability/loopDelay.js";
+import { randomBytes, randomUUID } from "node:crypto";
 
 /**
  * Composition root. This is the only file that knows every concrete class, which is what keeps the
  * adapters swappable: nothing below it imports a third-party payload type.
  */
 async function main(): Promise<void> {
+  const instanceId = process.env.RCC_DESKTOP_INSTANCE;
+  const desktopToken = process.env.RCC_DESKTOP_TOKEN;
+  if (instanceId && (!process.send || !desktopToken)) throw new Error("Desktop requires a private IPC channel");
+  // Install the parent-loss handler before opening stores or starting providers. A crashing desktop
+  // closes its IPC handle; it never needs to enumerate or take ownership of another process.
+  let parentGone = false;
+  let shutdownRequested = false;
+  let shutdown: (reason: string) => Promise<void> = async () => { parentGone = true; };
+  if (instanceId) {
+    process.once("disconnect", () => {
+      parentGone = true;
+      setTimeout(() => process.exit(1), 12_000).unref();
+      void shutdown("desktop-disconnected");
+    });
+  }
   const config = loadConfig();
+  if (instanceId) {
+    config.host = "127.0.0.1";
+    config.port = 0;
+  }
   const store = openSqlite(config.dbPath);
   const bus = createBus();
 
@@ -39,6 +61,10 @@ async function main(): Promise<void> {
   const summaries = new SqliteSummaryRepository(store.db);
   const embeddings = new SqliteEmbeddingRepository(store.db);
   const qa = new SqliteQaRepository(store.db);
+  const audioGaps = new SqliteAudioGapRepository(store.db);
+  const recoveryTasks = new SqliteRecoveryTaskRepository(store.db);
+  // A single process startup boundary, before any restored runtime can create new work.
+  recoveryTasks.interruptRunning();
 
   // Optional modules are read off the disk, not off an install-time ledger — see `observability/modules.ts`.
   const modules = deriveModules({
@@ -65,22 +91,14 @@ async function main(): Promise<void> {
   }
   if (!config.mockStt && modules.some((module) => module.id === "m3" && !module.installed)) {
     const stt = modules.find((module) => module.id === "m3");
-    log.warn("MOCK_STT=false but no sherpa-onnx model was found", {
+    log.warn("MOCK_STT=false and no in-package sherpa-onnx model was found", {
       checked: stt?.checked ?? [],
       remedy: stt?.remedy ?? "",
-      effect: "缺少模型文件时 worker 起不来，真实转写与字幕都不会出现",
+      effect: "安装包内未发现模型；若已从独立目录启动 STT worker，请以采集前的通道就绪检查为准",
     });
   }
 
-  let llm: LLMProvider;
-  if (!config.mockLlm && config.llm.apiKey) {
-    llm = new OpenAICompatProvider(config.llm);
-  } else {
-    if (!config.mockLlm) {
-      log.warn("LLM_API_KEY missing, falling back to Mock LLM", { baseUrl: config.llm.baseUrl });
-    }
-    llm = new MockLLMProvider();
-  }
+  const llm: LLMProvider = config.mockLlm ? new MockLLMProvider() : new OpenAICompatProvider(config.llm);
 
   // Mock vectors keep the whole retrieval path testable with no download (§50); the ONNX provider
   // runs in a worker thread because inference measured off-thread is the only way to keep subtitles
@@ -115,8 +133,13 @@ async function main(): Promise<void> {
       summaries,
       embeddings,
       qa,
+      audioGaps,
+      recoveryTasks,
     }),
   );
+  if (recording.restoreSelected()) {
+    log.info("restored saved session for review", { sessionId: recording.sessionId, input: "not-attached" });
+  }
 
   // Sampled from boot so the first recording is already covered: Test F is judged on this number.
   const loopDelay = createLoopDelayMonitor(config.observability.loopDelayReportMs);
@@ -129,32 +152,56 @@ async function main(): Promise<void> {
     providerNames: { stt: config.mockStt ? "mock" : "live", llm: llm.name, embedding: embedding.name },
     modules,
     loopDelay,
-    store: { sessions, transcripts, graphs, summaries, qa, embeddings },
+    store: { sessions, transcripts, graphs, summaries, qa, embeddings, audioGaps },
     embedding,
+    recoveryTasks,
+    desktop: instanceId && desktopToken ? { instanceId, token: desktopToken } : undefined,
+    browserAccess: instanceId ? undefined : { token: randomBytes(32).toString("hex"), instanceId: randomUUID() },
   });
 
-  // The dev server runs on another origin; the API is loopback-only, so a permissive header here is
-  // not an exposure — it is what lets `vite dev` talk to it without a proxy.
-  app.addHook("onSend", async (_request, reply) => {
-    reply.header("access-control-allow-origin", "*");
-    // The session import is the first HTTP POST the browser makes — everything else rides the
-    // websocket, which has no preflight. A JSON body is not a simple request, so the browser asks
-    // first; `apiServer` answers that OPTIONS, and these two headers are what make the answer count.
-    reply.header("access-control-allow-methods", "GET, POST, OPTIONS");
-    reply.header("access-control-allow-headers", "content-type");
-  });
-
-  await app.listen({ host: config.host, port: config.port });
-  // Nothing here authenticates, and an installed app now serves the whole product from this socket, so
-  // leaving loopback is a decision somebody should see in the log rather than discover in a scan.
-  if (config.host !== "127.0.0.1" && config.host !== "localhost" && config.host !== "::1") {
-    log.warn("listening on a non-loopback address; the app and its sessions are reachable from the network", {
-      host: config.host,
-      port: config.port,
+  shutdown = async (reason: string) => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    log.info("shutting down", { reason, loopDelay: loopDelay.report() });
+    // Also bounds cleanup after loss of the parent or shutdown of Windows.
+    const deadline = setTimeout(() => process.exit(1), 12_000);
+    deadline.unref();
+    loopDelay.stop();
+    try {
+      // Refuse new commands while recording.stop drains the last accepted audio and derived work.
+      for (const client of app.websocketServer.clients) client.close(1001, "application exiting");
+      await recording.stop();
+      await app.close();
+      onnx?.dispose();
+      store.close();
+      log.info("backend cleanup complete", { reason });
+      process.exit(0);
+    } catch (error) {
+      log.error("backend cleanup failed", { message: error instanceof Error ? error.message : String(error) });
+      onnx?.dispose();
+      store.close();
+      process.exit(1);
+    }
+  };
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  if (instanceId) {
+    process.on("message", (message: unknown) => {
+      if (!message || typeof message !== "object" || !("instanceId" in message) || message.instanceId !== instanceId) return;
+      if (!("type" in message)) return;
+      if (message.type === "rcc.shutdown") void shutdown("desktop-request");
+      if (message.type === "rcc.status" && "requestId" in message && process.connected) {
+        process.send?.({ type: "rcc.status", instanceId, requestId: message.requestId, state: recording.state });
+      }
     });
   }
+  if (parentGone) { await shutdown("desktop-lost-during-startup"); return; }
+  await app.listen({ host: config.host, port: config.port });
+  const address = app.server.address();
+  if (!address || typeof address !== "object") throw new Error("No listening address");
+  const url = `http://${config.host.includes(":") ? `[${config.host}]` : config.host}:${address.port}`;
   log.info("backend listening", {
-    url: `http://${config.host}:${config.port}`,
+    url,
     db: config.dbPath,
     staticDir: config.staticDir,
     stt: config.mockStt ? "mock" : "live",
@@ -162,17 +209,9 @@ async function main(): Promise<void> {
     embedding: embedding.name,
   });
 
-  const shutdown = async (signal: string) => {
-    log.info("shutting down", { signal, loopDelay: loopDelay.report() });
-    loopDelay.stop();
-    await recording.stop();
-    await app.close();
-    onnx?.dispose();
-    store.close();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  if (instanceId && process.connected && !parentGone && !shutdownRequested) {
+    process.send?.({ type: "rcc.ready", instanceId, pid: process.pid, url });
+  } else if (instanceId) await shutdown("desktop-lost-during-listen");
 }
 
 main().catch((error: unknown) => {

@@ -136,6 +136,31 @@ export class SqliteGraphRepository {
     return rows.map((row) => row.op_id);
   }
 
+  processedSegmentIds(sessionId: string): Set<string> {
+    const rows = this.db.prepare("SELECT segment_id FROM mindmap_processed_segments WHERE session_id = ?")
+      .all(sessionId) as { segment_id: string }[];
+    return new Set(rows.map((row) => row.segment_id));
+  }
+
+  incompleteSegmentIds(sessionId: string): string[] {
+    const rows = this.db.prepare("SELECT payload FROM graph_operations WHERE session_id = ? AND type = 'incomplete_batch'")
+      .all(sessionId) as { payload: string }[];
+    return rows.flatMap((row) => {
+      try {
+        const value: unknown = JSON.parse(row.payload);
+        if (!value || typeof value !== "object" || !("segmentIds" in value) || !Array.isArray(value.segmentIds)) return [];
+        return value.segmentIds.filter((id): id is string => typeof id === "string");
+      } catch { return []; }
+    });
+  }
+
+  recordProcessedSegments(sessionId: string, segmentIds: readonly string[], responseId: string, at: number): void {
+    const insert = this.db.prepare(`INSERT INTO mindmap_processed_segments
+      (session_id, segment_id, response_id, processed_at) VALUES (?,?,?,?)
+      ON CONFLICT(session_id, segment_id) DO NOTHING`);
+    for (const segmentId of segmentIds) insert.run(sessionId, segmentId, responseId, at);
+  }
+
   recentOperations(sessionId: string, limit: number): { type: string; payload: string; createdAt: number }[] {
     const rows = this.db
       .prepare(

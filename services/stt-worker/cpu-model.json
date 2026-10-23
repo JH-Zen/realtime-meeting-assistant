@@ -1,0 +1,73 @@
+{
+  "repository": "csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+  "revision": "98590b7ed6443e77b714204da2757d75e1a642f4",
+  "license": "apache-2.0",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 296,
+      "sha256": null,
+      "gitBlobSha1": "81530df8c89dc7f7e5238112a2c3a5855af43f8d"
+    },
+    {
+      "path": "bpe.vocab",
+      "bytes": 12564,
+      "sha256": null,
+      "gitBlobSha1": "e294b6f31228a7662fa1ddf2edf79d87e3f22c99"
+    },
+    {
+      "path": "decoder-epoch-99-avg-1.int8.onnx",
+      "bytes": 13091040,
+      "sha256": "1a70c593d71e53f023f5f55b0b4cfff5055abb786ee3992e5f63dc2e273cc4fa",
+      "gitBlobSha1": "9d415b974179f5b9bb2b6af20e71ade515268686"
+    },
+    {
+      "path": "encoder-epoch-99-avg-1.int8.onnx",
+      "bytes": 181895032,
+      "sha256": "8fa764187a261844f859d7143ebaa563af5d10adfece4c18a8f414c88cba2a9b",
+      "gitBlobSha1": "2be64b8812623c4974bf6224b1491027d7863083"
+    },
+    {
+      "path": "joiner-epoch-99-avg-1.int8.onnx",
+      "bytes": 3228404,
+      "sha256": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0",
+      "gitBlobSha1": "3a445a3b38b4e8768474168e41a75b2a7dbfc8eb"
+    },
+    {
+      "path": "test_wavs/0.wav",
+      "bytes": 321744,
+      "sha256": null,
+      "gitBlobSha1": "6ef8fc2940e6b87d14ccd80274a50465ad978b35"
+    },
+    {
+      "path": "test_wavs/1.wav",
+      "bytes": 163244,
+      "sha256": null,
+      "gitBlobSha1": "22d84d23a4c3b7d4589aac0198e156becbda9f0e"
+    },
+    {
+      "path": "test_wavs/2.wav",
+      "bytes": 150124,
+      "sha256": null,
+      "gitBlobSha1": "1d4872e920721d5a4b46f12b2fe5b1f05e85e369"
+    },
+    {
+      "path": "test_wavs/3.wav",
+      "bytes": 282604,
+      "sha256": null,
+      "gitBlobSha1": "1ff8ff91ee07500aa5966687c5cdd041d3f9c785"
+    },
+    {
+      "path": "test_wavs/8k.wav",
+      "bytes": 282284,
+      "sha256": null,
+      "gitBlobSha1": "8e96f5081f0360b7372a5e156d3cdd6f766a76fe"
+    },
+    {
+      "path": "tokens.txt",
+      "bytes": 56317,
+      "sha256": null,
+      "gitBlobSha1": "980dd6cd2d71532898b1eac4a4ac9a91302083b6"
+    }
+  ]
+}

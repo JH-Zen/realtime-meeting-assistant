@@ -19,8 +19,9 @@
  */
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const rootModules = join(repo, "node_modules");
@@ -31,6 +32,7 @@ const EMBEDDING_RUNTIME = ["@huggingface/transformers"];
 
 const TIERS = {
   core: { label: "核心（Mock 全功能）", optional: false },
+  desktop: { label: "Windows 独立桌面预览（Electron + 独立 Node 后端）", optional: false },
   m1: { label: "M1 真实 embedding 运行时", optional: true },
   m2: { label: "M2 bge-m3 权重", optional: true },
   m3: { label: "M3 sherpa-onnx 模型（需 Python）", optional: true },
@@ -169,6 +171,8 @@ async function dirStats(dir) {
 const mebibytes = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 
 async function stageNode(outDir) {
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", "import {DatabaseSync} from 'node:sqlite'; const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE probe (id INTEGER)'); db.close(); console.log(process.version)"], { encoding: "utf8", windowsHide: true });
+  if (probe.status !== 0 || Number(process.versions.node.split(".")[0]) < 24) throw new Error(`The packaging Node must support node:sqlite (24+): ${probe.stderr}`);
   const dest = join(outDir, "runtime", "node.exe");
   if (!existsSync(dest)) {
     await mkdir(join(outDir, "runtime"), { recursive: true });
@@ -182,7 +186,7 @@ async function stageNode(outDir) {
   return dest;
 }
 
-async function stageCore(outDir) {
+async function stageCore(outDir, desktop = false) {
   const backendDeps = await packageJson(backendDir);
   const seeds = Object.keys(backendDeps.dependencies ?? {}).filter((name) => name !== "@rcc/shared");
   const tree = await closure(seeds, { fromDir: backendDir, prune: new Set(EMBEDDING_RUNTIME) });
@@ -213,18 +217,44 @@ async function stageCore(outDir) {
   });
   await cp(join(repo, "docs"), join(outDir, "docs"), { recursive: true });
   await cp(join(repo, "README.md"), join(outDir, "README.md"));
+  await cp(join(repo, "CHANGELOG.md"), join(outDir, "CHANGELOG.md"));
   await cp(join(repo, "LICENSE"), join(outDir, "LICENSE"));
 
   // `.env.example` is the template; the install gets a real `.env` with the shipped defaults. No key is
   // ever written here — the one in this repo's own `.env` stays in this repo.
   const example = await readFile(join(repo, ".env.example"), "utf8");
   await writeFile(join(outDir, ".env.example"), example, "utf8");
-  if (!existsSync(join(outDir, ".env"))) await writeFile(join(outDir, ".env"), example, "utf8");
+  if (!desktop && !existsSync(join(outDir, ".env"))) await writeFile(join(outDir, ".env"), example, "utf8");
 
   await mkdir(join(outDir, "var"), { recursive: true });
   await mkdir(join(outDir, "models"), { recursive: true });
   await stageNode(outDir);
-  await writeLaunchers(outDir);
+  if (!desktop) await writeLaunchers(outDir);
+  return count;
+}
+
+async function stageDesktop(outDir) {
+  if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Desktop packaging currently requires Windows x64");
+  const electronDist = join(rootModules, "electron", "dist");
+  if (!existsSync(join(electronDist, "electron.exe"))) throw new Error("Electron binary missing: run node node_modules/electron/install.js first");
+  await cp(electronDist, outDir, { recursive: true, filter: (source) => !source.endsWith("default_app.asar") });
+  await cp(join(outDir, "electron.exe"), join(outDir, "实时会议助手.exe"));
+  await rm(join(outDir, "electron.exe"));
+  const appDir = join(outDir, "resources", "app");
+  const desktopDir = join(repo, "packages", "desktop");
+  await mkdir(appDir, { recursive: true });
+  for (const name of ["package.json", "dist", "assets"]) {
+    await cp(join(desktopDir, name), join(appDir, name), { recursive: true, filter: (source) => isPayload(source) });
+  }
+  const count = await stageCore(join(outDir, "resources", "backend"), true);
+  const desktopGuide = await readFile(join(repo, "docs", "DESKTOP.md"), "utf8");
+  await writeFile(join(outDir, "桌面版说明.md"), desktopGuide.replace(/\]\(([^/:)#]+\.md)\)/g, "](resources/backend/docs/$1)"), "utf8");
+  await writeFile(join(outDir, "runtime-versions.json"), JSON.stringify({
+    electron: (await packageJson(join(rootModules, "electron"))).version,
+    backendNode: process.versions.node,
+    desktop: (await packageJson(desktopDir)).version,
+    architecture: process.arch,
+  }, null, 2));
   return count;
 }
 
@@ -472,17 +502,27 @@ async function main() {
   const keep = args.includes("--keep");
 
   // Core is the only tier that copies build products, so it is the only one that can silently ship a stale dist.
-  if (tiers.includes("core")) assertBuildProducts();
+  if (tiers.includes("core") || tiers.includes("desktop")) assertBuildProducts();
+  if (tiers.includes("desktop") && !existsSync(join(repo, "packages", "desktop", "dist", "main.js"))) throw new Error("Run npm run build before desktop packaging");
 
   for (const tier of tiers) {
     const outDir = outDirFor(tier, outOverride);
+    // Validate the absolute cleanup target before recursively removing a previous generated stage.
+    const stagingRoot = resolve(outOverride ?? join(repo, ".scratch", "pkg"));
+    if (dirname(outDir).toLowerCase() !== stagingRoot.toLowerCase()) throw new Error(`Unsafe staging target: ${outDir}`);
+    for (const sourceDir of [repo, ...["packages", "services", "docs", "tools", "design"].map((name) => join(repo, name))]) {
+      const relation = relative(sourceDir.toLowerCase(), outDir.toLowerCase());
+      if (relation === "" || (sourceDir !== repo && !isAbsolute(relation) && relation !== ".." && !relation.startsWith(`..${sep}`))) throw new Error(`Refusing to remove a source directory: ${outDir}`);
+    }
     if (existsSync(outDir)) {
       if (keep) console.log(`--keep：在既有 ${outDir} 上覆盖写入`);
       else await rm(outDir, { recursive: true, force: true });
     }
     await mkdir(outDir, { recursive: true });
     console.log(`\n=== ${TIERS[tier].label} (${tier}) → ${outDir} ===`);
-    if (tier === "core") {
+    if (tier === "desktop") {
+      console.log(`桌面后台运行时依赖 ${await stageDesktop(outDir)} 个包`);
+    } else if (tier === "core") {
       const packages = await stageCore(outDir);
       console.log(`运行时依赖闭包 ${packages} 个包（已剥掉 ${EMBEDDING_RUNTIME.join(", ")} 与其整棵子树）`);
     } else {

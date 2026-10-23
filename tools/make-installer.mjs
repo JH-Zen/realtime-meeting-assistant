@@ -22,23 +22,30 @@
  *        [--launcher=..] [--out=<dir>] [--build=<dir>]
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDesktopVersion, stagedDesktopVersion, validateDesktopVersion } from "./desktop-version.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
+const desktop = argv.includes("--desktop");
 const arg = (name, fallback) => argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 
-const staged = resolve(arg("staged", join(repo, ".scratch", "pkg", "core")));
-const name = arg("name", "RCC-Core");
+const staged = resolve(arg("staged", join(repo, ".scratch", "pkg", desktop ? "desktop" : "core")));
+const version = desktop ? stagedDesktopVersion(staged) : validateDesktopVersion(arg("version", readDesktopVersion())).version;
+const name = arg("name", desktop ? `RCC-Desktop-Preview-${version}` : "RCC-Core");
+if (!/^[\w.-]+$/.test(name) || name === "." || name === "..") fail("安装包名称只能使用字母、数字、连字符、点和下划线，不能是目录跳转。");
 const build = resolve(arg("build", join(repo, ".scratch", "pkg", "build")));
-const out = resolve(arg("out", join(build, "out")));
-const label = arg("label", "实时辅助记录（Real-time Cognitive Companion）核心包 · Mock 全功能");
+const out = resolve(arg("out", desktop ? join(repo, "outputs", "desktop-preview", `v${version}`) : join(build, "out")));
+const label = arg("label", desktop ? "实时会议助手（桌面预览）" : "实时辅助记录（Real-time Cognitive Companion）核心包 · Mock 全功能");
 // Which file proves the extraction was complete, and what the user double-clicks afterwards. Both are per tier:
 // a module package has neither a backend dist nor its own launcher.
-const required = arg("required", join("packages", "backend", "dist", "index.js"));
-const launcher = arg("launcher", "RCC.bat");
+const required = arg("required", desktop ? "实时会议助手.exe" : join("packages", "backend", "dist", "index.js"));
+const launcher = arg("launcher", desktop ? "实时会议助手.exe" : "RCC.bat");
+if ([label, required, launcher, arg("shortcut", "")].some((value) => /[\r\n]/.test(value))) fail("安装元数据不能包含换行。");
+if (/[<>:"/\\|?*]/.test(arg("shortcut", ""))) fail("快捷方式名称不能包含路径或 Windows 文件名禁用字符。");
 
 const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
 const tar = join(systemRoot, "System32", "tar.exe");
@@ -47,12 +54,21 @@ if (!existsSync(tar)) fail(`${tar} 不存在——这台机器没有 System32 �
 if (!existsSync(compiler)) fail(`${compiler} 不存在——这台机器没有 .NET Framework 4 的 csc，无法产出 Setup.exe。`);
 // Three different staged trees are legitimate: core (has its own runtime), m1 (only `node_modules`), and a
 // module of weights (`models`). Anything else is a directory this script was not pointed at by accident.
-if (!existsSync(join(staged, "runtime", "node.exe")) && !existsSync(join(staged, "models")) && !existsSync(join(staged, "node_modules"))) {
+if (!existsSync(join(staged, "runtime", "node.exe")) && !existsSync(join(staged, "resources", "backend", "runtime", "node.exe")) && !existsSync(join(staged, "models")) && !existsSync(join(staged, "node_modules"))) {
   console.error(`${staged} 看起来不是 tools/package.mjs 产出来的暂存目录（既没有 runtime/node.exe，也没有 models/，也没有 node_modules/）`);
   process.exit(1);
 }
 
 const work = join(build, name);
+const setupExe = join(out, `${name}-Setup.exe`);
+if (existsSync(setupExe) && !argv.includes("--replace")) fail("此版本已有安装包。请先更新版本号；只有替换尚未交付的本地构建时才显式使用 --replace。");
+if (dirname(work).toLowerCase() !== build.toLowerCase()) fail("构建工作目录必须位于指定 build 目录中。");
+for (const protectedDir of [repo, ...["packages", "services", "docs", "tools", "design"].map((item) => join(repo, item))]) {
+  const below = relative(protectedDir.toLowerCase(), work.toLowerCase());
+  const above = relative(work.toLowerCase(), protectedDir.toLowerCase());
+  const inside = (path) => path === "" || (!path.startsWith("..") && !isAbsolute(path));
+  if (inside(above) || (protectedDir !== repo && inside(below))) fail(`拒绝清理源码目录：${work}`);
+}
 assertDisjoint(work, staged);
 rmSync(work, { recursive: true, force: true });
 rmSync(join(out, `${name}-Setup.exe`), { force: true });
@@ -72,15 +88,18 @@ console.log(`payload.zip = ${mebibytes(statSync(payload).size)}`);
 const manifest = join(work, "rcc-manifest.txt");
 writeFileSync(
   manifest,
-  [`label=${label}`, `required=${required}`, `launcher=${launcher}`, ""].join("\n"),
+  [`label=${label}`, `version=${version}`, `required=${required}`, `launcher=${launcher}`, `shortcut=${arg("shortcut", desktop ? "实时会议助手（桌面预览）" : "")}`, `defaultFolder=${desktop ? "RCC-Desktop-Preview" : "RCC"}`, ""].join("\n"),
   "utf8",
 );
 
-const setupExe = join(out, `${name}-Setup.exe`);
 const frameworkDir = dirname(compiler);
+const assemblyInfo = join(work, "AssemblyInfo.cs");
+writeFileSync(assemblyInfo, `using System.Reflection;\n[assembly: AssemblyTitle("实时会议助手安装向导")]\n[assembly: AssemblyProduct("实时会议助手")]\n[assembly: AssemblyVersion("${validateDesktopVersion(version).windowsVersion}")]\n[assembly: AssemblyFileVersion("${validateDesktopVersion(version).windowsVersion}")]\n[assembly: AssemblyInformationalVersion("${version}")]\n`, "utf8");
 const cscArgs = [
   "/nologo",
-  "/target:exe",
+  "/codepage:65001",
+  "/target:winexe",
+  `/win32manifest:${join(repo, "tools", "installer", "app.manifest")}`,
   `/out:${setupExe}`,
   `/resource:${payload},payload.zip`,
   `/resource:${manifest},rcc-manifest.txt`,
@@ -90,15 +109,21 @@ const cscArgs = [
   `/reference:${fromGac("System.IO.Compression.dll")}`,
   `/reference:${fromGac("System.IO.Compression.FileSystem.dll")}`,
   join(repo, "tools", "installer", "Setup.cs"),
+  join(repo, "tools", "installer", "Installer.cs"),
+  join(repo, "tools", "installer", "InstallerWizard.cs"),
+  assemblyInfo,
 ];
 console.log(`编译 ${setupExe}`);
 const compiled = run(compiler, cscArgs);
 if (compiled.stdout) console.log(compiled.stdout.trim());
 if (compiled.status !== 0) fail(`csc 退出 ${compiled.status}：${compiled.stderr.slice(0, 800)}`);
 if (!existsSync(setupExe)) fail("csc 退出 0 但没有产出 exe");
+const sha256 = createHash("sha256").update(readFileSync(setupExe)).digest("hex");
+writeFileSync(`${setupExe}.sha256`, `${sha256}  ${basename(setupExe)}\n`, "ascii");
 
 console.log(`\n产物：${setupExe}\n      ${mebibytes(statSync(setupExe).size)}`);
-console.log("下一步：node .scratch/run-setup-exe.mjs '<这个 exe>' '<目标目录>' 会真装一遍，再启动装出来的应用。");
+console.log(`版本：${version}。双击打开安装向导；自动验证可加 --quiet --target=<目录>。`);
+console.log(`SHA-256：${sha256}`);
 
 /**
  * Measured, not hypothetical: a probe passed `--build=D:\rcc-build` with `--staged=D:\rcc-build\mini` and the
@@ -109,8 +134,8 @@ console.log("下一步：node .scratch/run-setup-exe.mjs '<这个 exe>' '<目标
  * is deleted, because the cleanup below would otherwise remove the tree it is guarding.
  */
 function assertDisjoint(workDir, stagedDir) {
-  const inside = relative(resolve(stagedDir).toLowerCase(), resolve(workDir).toLowerCase());
-  if (inside === "" || (!inside.startsWith("..") && !isAbsolute(inside))) {
+  const relations = [relative(resolve(stagedDir).toLowerCase(), resolve(workDir).toLowerCase()), relative(resolve(workDir).toLowerCase(), resolve(stagedDir).toLowerCase())];
+  if (relations.some((inside) => inside === "" || (!inside.startsWith("..") && !isAbsolute(inside)))) {
     fail(
       `构建工作目录 ${workDir} 与暂存目录 ${stagedDir} 重叠（Windows 路径大小写不敏感）。` +
         "tar 会把正在写的 payload.zip 打进包里，产出一个看似成功、实则为空的安装包。换一个 --build。",

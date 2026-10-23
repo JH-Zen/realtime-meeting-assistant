@@ -25,6 +25,7 @@ export const ModuleIdSchema = z.enum([
 export type ModuleId = z.infer<typeof ModuleIdSchema>;
 
 export const ModuleErrorSchema = z.object({
+  sessionId: z.string().min(1).optional(),
   module: ModuleIdSchema,
   /** Machine-readable cause key, stable enough to switch on. */
   code: z.string().min(1),
@@ -110,6 +111,8 @@ export const AnswerStartedSchema = z.object({
 });
 
 export const AnswerTokenSchema = z.object({
+  /** Optional only for compatibility with older event producers. New producers always supply it. */
+  sessionId: z.string().min(1).optional(),
   questionId: z.string().min(1),
   /** Accumulated text so far; the client renders the delta itself. */
   text: z.string(),
@@ -135,7 +138,7 @@ export const AnswerRejectedSchema = z.object({
   sessionId: z.string().min(1),
   questionId: z.string().min(1),
   /** `busy` = every answer slot is taken, `rate_limited` = asked again before the interval elapsed. */
-  reason: z.enum(["busy", "rate_limited"]),
+  reason: z.enum(["busy", "rate_limited", "session_changed"]),
   message: z.string(),
   /** `0` means "a slot will free, we cannot say when" — an interval refusal carries a real number. */
   retryAfterMs: z.number().min(0).default(0),
@@ -160,6 +163,8 @@ export type AnswerRejected = z.infer<typeof AnswerRejectedSchema>;
  * reaches MindMap, Memory or Embedding.
  */
 export interface BusEvents {
+  /** Selection changed; connected clients must replace their complete session projection. */
+  "session.changed": [{ sessionId: string | null }];
   "recording.started": [RecordingStarted];
   "recording.paused": [RecordingChanged];
   "recording.resumed": [RecordingChanged];

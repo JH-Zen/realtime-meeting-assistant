@@ -164,6 +164,7 @@ export class MemoryCore {
       const message = error instanceof Error ? error.message : String(error);
       log.warn("stage summary failed", { sessionId: this.sessionId, segments: batch.length, message });
       this.bus.emit("module.error", {
+        sessionId: this.sessionId,
         module: "memory",
         code: "summary_failed",
         message,
@@ -207,6 +208,7 @@ export class MemoryCore {
         });
       } catch (error) {
         this.bus.emit("module.error", {
+          sessionId: this.sessionId,
           module: "memory",
           code: "merge_failed",
           message: error instanceof Error ? error.message : String(error),

@@ -62,9 +62,17 @@ export const SessionSchema = z.object({
   title: z.string().min(1).optional(),
   startedAt: z.number(),
   endedAt: z.number().optional(),
+  /** Capture time excluding pauses. Absent on older session files/databases. */
+  durationSec: z.number().min(0).optional(),
   status: z.enum(["recording", "paused", "completed"]),
 });
 export type Session = z.infer<typeof SessionSchema>;
+
+export const SessionListEntrySchema = SessionSchema.extend({
+  transcriptCount: z.number().int().min(0),
+  nodeCount: z.number().int().min(0),
+});
+export type SessionListEntry = z.infer<typeof SessionListEntrySchema>;
 
 /** Transcript is the system's single source of truth; this is the store's contract. */
 export interface TranscriptStore {

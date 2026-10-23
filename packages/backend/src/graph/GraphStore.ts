@@ -49,9 +49,16 @@ export class GraphStore {
     this.state = state;
   }
 
-  applyOps(operations: readonly GraphOperation[], responseId: string): { touched: string[]; skipped: string[] } {
-    if (operations.length === 0) return { touched: [], skipped: [] };
+  applyOps(operations: readonly GraphOperation[], responseId: string, processedSegmentIds: readonly string[] = [], liveBatch?: { segmentIds: readonly string[]; rejected: boolean }): { touched: string[]; skipped: string[] } {
+    if (operations.length === 0 && processedSegmentIds.length === 0 && !liveBatch) return { touched: [], skipped: [] };
     const result = applyOperations(this.state, operations);
+    const hasUnapplied = result.skipped.some((id) => !this.state.seenOps.has(id));
+    const incomplete = liveBatch && (liveBatch.rejected || hasUnapplied);
+    const completedIds = liveBatch ? incomplete ? [] : liveBatch.segmentIds : processedSegmentIds;
+    // Recovery must not commit half a response and then generate different node ids on retry.
+    if (processedSegmentIds.length > 0 && hasUnapplied) {
+      throw new Error("导图操作不能完整应用，整批保留待补建。");
+    }
     const at = Date.now();
     // The batch reaches SQLite before it reaches `this.state` or the bus. Writing in the other order
     // means a disk failure leaves the store holding nodes nobody else can see: `MindMapAgent`
@@ -68,6 +75,8 @@ export class GraphStore {
         else this.repo.deleteNode(this.sessionId, nodeId);
       }
       this.repo.saveEdges(this.sessionId, Object.values(result.state.edges));
+      if (completedIds.length > 0) this.repo.recordProcessedSegments(this.sessionId, completedIds, responseId, at);
+      if (incomplete) this.repo.recordOperation(this.sessionId, `incomplete:${this.sessionId}:${responseId}`, "incomplete_batch", responseId, { segmentIds: liveBatch.segmentIds }, at);
     });
 
     this.state = result.state;
@@ -80,6 +89,15 @@ export class GraphStore {
 
   snapshot() {
     return { nodes: toNodeList(this.state), edges: Object.values(this.state.edges) };
+  }
+
+  processedSegmentIds(): Set<string> {
+    return this.repo.processedSegmentIds(this.sessionId);
+  }
+
+  hasUntrackedChanges(): boolean {
+    const processed = this.processedSegmentIds();
+    return this.repo.incompleteSegmentIds(this.sessionId).some((id) => !processed.has(id));
   }
 
   positions() {

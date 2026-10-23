@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useSessionStore } from "../state/sessionStore";
 import { useGraphStore } from "../state/graphStore";
-import { sendCommand, resyncFromServer } from "../net/connection";
+import { sendCommand } from "../net/connection";
+import { SessionHistory } from "./SessionHistory";
 import { downloadSession, importSessionFile } from "../net/sessionFile";
 import { formatClock, linkLabel } from "../format";
-import { startMicrophone, type MicrophoneCapture } from "../audio/microphone";
+import { startMicrophone, stopAllMicrophones, type MicrophoneCapture } from "../audio/microphone";
+import { API_BASE } from "../config";
+import { apiFetch } from "../net/api";
 
 /**
  * The server reports elapsed time in events, which only arrive at lifecycle boundaries. Between
@@ -34,6 +37,7 @@ export function RecordingControls() {
   const reconnectAttempts = useSessionStore((s) => s.reconnectAttempts);
   const stt = useSessionStore((s) => s.stt);
   const sessionId = useSessionStore((s) => s.sessionId);
+  const commandFailure = useSessionStore((s) => s.errors.findLast((error) => error.code === "command_failed"));
   const nodeCount = useGraphStore((s) => Object.keys(s.graph.nodes).length);
 
   const offline = link !== "open";
@@ -52,9 +56,57 @@ export function RecordingControls() {
   /** One line about the session file that just left or arrived, kept apart from the recording notices. */
   const [fileNotice, setFileNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const actionGeneration = useRef(0);
+  const pendingAction = useRef(false);
+  const requestAbort = useRef<AbortController | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [modes, setModes] = useState<{ stt: string; llm: string; embedding: string; embeddingReady: boolean } | null>(null);
 
   // A tab that unmounts while the microphone is open would leave the device indicator on.
-  useEffect(() => () => capture.current?.stop(), []);
+  useEffect(() => () => {
+    ++actionGeneration.current;
+    requestAbort.current?.abort();
+    capture.current?.stop();
+    stopAllMicrophones();
+  }, []);
+
+  useEffect(() => {
+    if (recording !== "idle") { pendingAction.current = false; setPreparing(false); }
+    if (recording === "idle" || recording === "viewing") {
+      setEnding(false);
+      capture.current?.stop();
+      capture.current = null;
+      stopAllMicrophones();
+    }
+  }, [recording]);
+
+  useEffect(() => { if (commandFailure || link !== "open") setEnding(false); }, [commandFailure, link]);
+
+  // Notices belong to the selected meeting; a newly opened history must not inherit old failures.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the selected id is the reset trigger
+  useEffect(() => { setMicError(null); setFileNotice(null); }, [sessionId]);
+
+  useEffect(() => {
+    if (link !== "open") return;
+    let current = true;
+    void apiFetch(`${API_BASE}/api/modes`).then(async (response) => {
+      if (response.ok) { const value = await response.json(); if (current) setModes(value); }
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, [link]);
+
+  useEffect(() => {
+    if (stt.state !== "failed" && (link === "open" || !pendingAction.current)) return;
+    ++actionGeneration.current;
+    pendingAction.current = false;
+    setPreparing(false);
+    requestAbort.current?.abort();
+    capture.current?.stop();
+    capture.current = null;
+    stopAllMicrophones();
+    window.rccDesktop?.setCaptureActive(false);
+  }, [link, stt.state]);
 
   // Whatever the server last told us wins: once it no longer says the session is running, the
   // divergence this flag describes is gone.
@@ -62,37 +114,53 @@ export function RecordingControls() {
     if (recording !== "recording") setDetached(false);
   }, [recording]);
 
-  async function openMicrophone(): Promise<boolean> {
-    if (capture.current) return true;
+  function closeMicrophone(): void {
+    ++actionGeneration.current;
+    pendingAction.current = false;
+    setPreparing(false);
+    requestAbort.current?.abort();
+    capture.current?.stop();
+    capture.current = null;
+    stopAllMicrophones();
+    window.rccDesktop?.setCaptureActive(false);
+  }
+
+  async function startInput(kind: "mic" | "mock", resume = false) {
+    if (pendingAction.current) return;
+    pendingAction.current = true;
+    setPreparing(true);
+    const generation = ++actionGeneration.current;
+    const controller = new AbortController();
+    requestAbort.current = controller;
+    window.rccDesktop?.setCaptureActive(true);
+    setMicError(null);
+    setDetached(false);
     try {
-      capture.current = await startMicrophone();
-      return true;
+      if (kind === "mic") {
+        // No permission/device request until the configured recognition channel has announced ready.
+        const response = await apiFetch(`${API_BASE}/api/recording/preflight?source=mic`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`语音准备检查失败（HTTP ${response.status}）`);
+        const readiness = await response.json() as { ready: boolean; message: string };
+        if (!readiness.ready) throw new Error(readiness.message);
+        if (generation !== actionGeneration.current) return;
+        const opened = await startMicrophone();
+        if (generation !== actionGeneration.current) { opened.stop(); return; }
+        capture.current = opened;
+      }
+      if (generation !== actionGeneration.current) return;
+      source.current = kind;
+      if (!sendCommand(resume ? { cmd: "recording.resume" } : { cmd: "recording.start", source: kind })) throw new Error("后台连接已断开，未开始采集。");
+      // Keep the action locked until the server acknowledges recording.started/resumed.
     } catch (error) {
-      setMicError(`麦克风不可用：${error instanceof Error ? error.message : String(error)}`);
-      return false;
+      if (generation !== actionGeneration.current) return;
+      closeMicrophone();
+      setMicError(`${kind === "mic" ? "麦克风" : "输入"}不可用：${error instanceof Error ? error.message : String(error)}`);
+      window.rccDesktop?.setCaptureActive(false);
     }
   }
 
-  function closeMicrophone(): void {
-    capture.current?.stop();
-    capture.current = null;
-  }
-
-  async function begin(kind: "mic" | "mock") {
-    setMicError(null);
-    setDetached(false);
-    // Ask for the device before starting the session: a denied permission should not leave a
-    // recording running that nothing is feeding.
-    if (kind === "mic" && !(await openMicrophone())) return;
-    source.current = kind;
-    sendCommand({ cmd: "recording.start", source: kind });
-  }
-
-  async function resume() {
-    setDetached(false);
-    if (source.current === "mic" && !(await openMicrophone())) return;
-    sendCommand({ cmd: "recording.resume" });
-  }
+  async function begin(kind: "mic" | "mock") { await startInput(kind); }
+  async function resume() { await startInput(source.current, true); }
 
   function pause() {
     // Pausing releases the microphone: a user who pressed 暂停 expects the device to go quiet.
@@ -101,11 +169,11 @@ export function RecordingControls() {
   }
 
   function stop() {
+    const cancelPreparation = preparing;
     closeMicrophone();
-    const sent = sendCommand({ cmd: "recording.stop" });
-    // Closing a history is a session switch rather than the end of a recording, and no event announces
-    // it, so the snapshots are re-pulled the way a reconnect pulls them.
-    if (sent && recording === "viewing") resyncFromServer();
+    if (cancelPreparation) return;
+    const sent = sendCommand({ cmd: recording === "viewing" ? "session.close" : "recording.stop" });
+    setEnding(sent);
     setDetached(!sent);
   }
 
@@ -140,14 +208,14 @@ export function RecordingControls() {
         <button
           type="button"
           className="primary"
-          disabled={offline || recording !== "idle"}
+          disabled={offline || preparing || ending || (recording !== "idle" && recording !== "viewing")}
           onClick={() => void begin("mic")}
         >
           麦克风录音
         </button>
         <button
           type="button"
-          disabled={offline || recording !== "idle"}
+          disabled={offline || preparing || ending || (recording !== "idle" && recording !== "viewing")}
           onClick={() => void begin("mock")}
         >
           模拟讲解
@@ -155,16 +223,16 @@ export function RecordingControls() {
         {/* 暂停 and 结束 release the microphone locally, so they must stay clickable when the socket
             is down — `sendCommand` drops the command on its own. The device indicator would otherwise
             keep burning until reconnect, and only the server can end the session. */}
-        <button type="button" disabled={recording !== "recording"} onClick={pause}>
+        <button type="button" disabled={ending || recording !== "recording"} onClick={pause}>
           暂停
         </button>
-        <button type="button" disabled={offline || recording !== "paused"} onClick={() => void resume()}>
+        <button type="button" disabled={offline || preparing || ending || recording !== "paused"} onClick={() => void resume()}>
           继续
         </button>
-        <button type="button" disabled={recording === "idle"} onClick={stop}>
-          {recording === "viewing" ? "关闭历史" : "结束"}
+        <button type="button" disabled={ending || (recording === "idle" && !preparing)} onClick={stop}>
+          {preparing ? "取消准备" : ending ? "正在收尾…" : recording === "viewing" ? "关闭会议" : "结束"}
         </button>
-        <button type="button" disabled={offline} onClick={() => sendCommand({ cmd: "mindmap.forceUpdate" })}>
+        <button type="button" disabled={offline || ending || recording === "viewing" || recording === "idle"} onClick={() => sendCommand({ cmd: "mindmap.forceUpdate" })}>
           立即整理导图
         </button>
         {/* Both talk to the store, not the recogniser, so neither waits for the socket: exporting the
@@ -181,7 +249,7 @@ export function RecordingControls() {
         </button>
         <button
           type="button"
-          disabled={recording === "recording" || recording === "paused"}
+          disabled={offline || preparing || ending || recording === "recording" || recording === "paused"}
           onClick={() => fileInput.current?.click()}
         >
           导入历史会话
@@ -201,6 +269,8 @@ export function RecordingControls() {
       </div>
 
       <div className="controls__status">
+        {modes && <span className="badge">语音配置 {modes.stt === "mock" ? "模拟" : "真实"} · 问答 {/mock/i.test(modes.llm) ? "模拟" : "真实"} · 检索 {/mock/i.test(modes.embedding) ? "模拟" : modes.embeddingReady ? "真实" : "真实（缺运行时/模型）"}</span>}
+        {preparing && <span className="badge">正在准备输入，可取消</span>}
         <Badge
           label="连接"
           value={linkLabel(link, reconnectAttempts)}
@@ -214,7 +284,7 @@ export function RecordingControls() {
         />
         <Badge
           label="录音"
-          value={recording === "viewing" ? "历史会话" : recording}
+          value={recording === "viewing" ? "已停止采集 · 可继续提问" : recording}
           tone={recording === "recording" ? "ok" : "idle"}
         />
         <Badge label="时长" value={formatClock(shownSec)} tone="idle" />
@@ -228,6 +298,7 @@ export function RecordingControls() {
           {notice}
         </p>
       )}
+      <SessionHistory busy={preparing || ending} />
     </header>
   );
 }

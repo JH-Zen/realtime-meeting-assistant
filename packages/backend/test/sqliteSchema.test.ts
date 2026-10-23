@@ -48,3 +48,29 @@ it("leaves a freshly created database without the column at all", () => {
   expect(columnNames(store.db, "transcript_segments")).not.toContain("speaker_id");
   store.close();
 });
+
+it("adds review metadata to an older database while preserving its saved meeting rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rcc-m2-schema-"));
+  const path = join(dir, "old.sqlite");
+  try {
+    const first = openSqlite(path);
+    const sessions = new SqliteSessionRepository(first.db);
+    sessions.create({ id: "preserved", title: "原会议", startedAt: 1, endedAt: 4000, status: "completed" });
+    new SqliteTranscriptRepository(first.db).appendFinal({ id: "saved", sessionId: "preserved", text: "必须保留的原文", type: "final", startTime: 0, createdAt: 1 });
+    first.db.exec("DROP TABLE workspace_state");
+    first.db.exec("ALTER TABLE sessions DROP COLUMN duration_sec");
+    const before = first.db.prepare("SELECT * FROM sessions").all();
+    const transcript = first.db.prepare("SELECT * FROM transcript_segments").all();
+    first.close();
+    for (let pass = 0; pass < 2; pass++) {
+      const reopened = openSqlite(path);
+      expect(reopened.db.prepare("SELECT id, title, started_at, ended_at, status FROM sessions").all()).toEqual(before);
+      expect(reopened.db.prepare("SELECT * FROM transcript_segments").all()).toEqual(transcript);
+      expect(new SqliteSessionRepository(reopened.db).get("preserved")?.durationSec).toBeUndefined();
+      const repo = new SqliteSessionRepository(reopened.db);
+      repo.select("preserved");
+      expect(repo.selected()?.title).toBe("原会议");
+      reopened.close();
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

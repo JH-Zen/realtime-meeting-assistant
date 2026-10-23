@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startMicrophone } from "../src/audio/microphone";
+import { startMicrophone, stopAllMicrophones } from "../src/audio/microphone";
 
 /**
  * A start that fails half-way is the case that decides whether the microphone is held: the browser
@@ -15,6 +15,7 @@ class FakeTrack {
 }
 
 interface Failures {
+  context?: boolean;
   addModule?: boolean;
   workletNode?: boolean;
   resume?: boolean;
@@ -63,6 +64,7 @@ function install(failures: Failures = {}): void {
     mediaDevices: { getUserMedia: async () => ({ getTracks: () => tracks }) },
   });
   vi.stubGlobal("AudioContext", function fake() {
+    if (failures.context) throw new Error("audio context unavailable");
     const context = new FakeContext(failures);
     contexts.push(context);
     return context;
@@ -76,12 +78,19 @@ function install(failures: Failures = {}): void {
 }
 
 afterEach(() => {
+  stopAllMicrophones();
   vi.unstubAllGlobals();
   URL.createObjectURL = originalUrl.create;
   URL.revokeObjectURL = originalUrl.revoke;
 });
 
 describe("microphone capture", () => {
+  it("releases the granted device when AudioContext construction fails", async () => {
+    install({ context: true });
+    await expect(startMicrophone()).rejects.toThrow("audio context unavailable");
+    expect(tracks.every((track) => track.readyState === "ended")).toBe(true);
+    expect(contexts).toHaveLength(0);
+  });
   it("releases the device when the worklet module will not compile", async () => {
     install({ addModule: true });
     await expect(startMicrophone()).rejects.toThrow("worklet refused");
@@ -116,5 +125,25 @@ describe("microphone capture", () => {
 
     expect(tracks.every((track) => track.readyState === "ended")).toBe(true);
     expect(contexts[0]?.closed).toBe(true);
+  });
+
+  it("releases all live native captures when the desktop prepares to quit", async () => {
+    install();
+    await startMicrophone();
+    stopAllMicrophones();
+    expect(tracks.every((track) => track.readyState === "ended")).toBe(true);
+    expect(contexts[0]?.closed).toBe(true);
+  });
+
+  it("releases a permission result that arrives after the desktop stopped capture", async () => {
+    install();
+    let allow: ((stream: unknown) => void) | undefined;
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: () => new Promise((done) => { allow = done; }) } });
+    const pending = startMicrophone();
+    stopAllMicrophones();
+    allow?.({ getTracks: () => tracks });
+    await expect(pending).rejects.toThrow("迟到的麦克风请求");
+    expect(tracks.every((track) => track.readyState === "ended")).toBe(true);
+    expect(contexts).toHaveLength(0);
   });
 });

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
+import WebSocket from "ws";
 
 const option = (name) => process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
 const installer = resolve(option("installer") ?? "outputs/releases/v0.1.0-preview.1/RCC-Core-Setup.exe");
@@ -84,16 +85,21 @@ async function until(read, timeoutMs = 25_000) {
 
 let socket;
 try {
-  const health = await until(async () => {
+  await until(async () => {
     const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1500) });
     return response.ok ? response.json() : null;
   });
+  // New browser builds require an HttpOnly cookie; older installers have no bootstrap route.
+  const access = await fetch(`${base}/api/access`);
+  const cookie = access.ok ? access.headers.get("set-cookie")?.split(";")[0] : undefined;
+  const headers = cookie ? { cookie } : {};
+  const health = await (await fetch(`${base}/health`, { headers })).json();
   assert.equal(health.mockStt, true);
   assert.equal(health.mockLlm, true);
   const page = await fetch(`${base}/`);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /<html/i);
-  socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers });
   const events = [];
   socket.addEventListener("message", (event) => events.push(JSON.parse(event.data)));
   await new Promise((done, fail) => {
@@ -102,7 +108,7 @@ try {
   });
   socket.send(JSON.stringify({ cmd: "recording.start", source: "mock" }));
   const session = await until(async () => {
-    const value = await (await fetch(`${base}/api/session`)).json();
+    const value = await (await fetch(`${base}/api/session`, { headers })).json();
     return value.segments?.length > 0 && value.nodes?.length > 0 ? value : null;
   });
   socket.send(JSON.stringify({ cmd: "question.ask", questionId: "release-smoke", text: "刚才讲了什么？" }));
@@ -110,7 +116,7 @@ try {
   assert.ok(answer.text.length > 0);
   socket.send(JSON.stringify({ cmd: "recording.stop" }));
   await until(() => events.find((event) => event.kind === "recording.stopped"));
-  const response = await fetch(`${base}/api/session/${session.sessionId}/export`);
+  const response = await fetch(`${base}/api/session/${session.sessionId}/export`, { headers });
   assert.equal(response.status, 200);
   const document = await response.json();
   assert.equal(document.schemaVersion, 1);

@@ -9,6 +9,8 @@
       "!**/.scratch",
       "!**/.probe-sox",
       "!**/.probe-model",
+      "!work",
+      "!outputs",
       "!**/*.json",
       "!**/*.jsonc",
       "!**/*.css",

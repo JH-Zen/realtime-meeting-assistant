@@ -1,4 +1,4 @@
-import { decodeServerEvent, type ClientCommand } from "@rcc/shared";
+import { decodeServerEvent, type AudioCaptureEnd, type ClientCommand } from "@rcc/shared";
 import { useSessionStore } from "../state/sessionStore";
 import { dispatchEvent } from "./dispatch";
 
@@ -6,9 +6,8 @@ import { dispatchEvent } from "./dispatch";
  * A browser tab is another subscriber to the backend bus. Reconnects back off — 1s doubling to an 8s
  * ceiling, and never giving up, because a tab has no better answer than trying again — and every fresh
  * socket is answered with the snapshots it needs: session state, the graph including the positions the
- * user dragged, and the finals. So a dropped socket loses nothing the server knows. What it can lose
- * is an answer that finished while the socket was down, because answers stream and are not replayed;
- * the user re-asks.
+ * user dragged, finals, and saved Q&A. A reconnect restores answers completed while disconnected;
+ * interrupted questions remain visible without an endless pending indicator.
  */
 const MAX_BACKOFF_MS = 8000;
 
@@ -17,15 +16,31 @@ let attempt = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let wanted = false;
 let target = "";
+let authorize: (() => Promise<void>) | undefined;
+let dialGeneration = 0;
+// Control metadata only, never PCM. A stopped capture can disclose its lost tail on reconnect.
+const pendingCaptureEnds = new Map<string, AudioCaptureEnd>();
 
-export function connect(url: string): void {
+export function sendCaptureEnd(capture: AudioCaptureEnd): void {
+  if (sendCommand({ cmd: "audio.capture.end", capture })) return;
+  pendingCaptureEnds.set(capture.captureId, capture);
+  if (pendingCaptureEnds.size > 32) { const first = pendingCaptureEnds.keys().next().value; if (first) pendingCaptureEnds.delete(first); }
+}
+
+export function connect(url: string, prepare?: () => Promise<void>): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  attempt = 0;
+  closeQuietly();
   wanted = true;
   target = url;
+  authorize = prepare;
   open();
 }
 
 export function disconnect(): void {
   wanted = false;
+  dialGeneration += 1;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   closeQuietly();
@@ -65,13 +80,30 @@ export function resyncFromServer(): void {
 
 export function sendCommand(command: ClientCommand): boolean {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  socket.send(JSON.stringify(command));
-  return true;
+  if (command.cmd === "audio.chunk" && socket.bufferedAmount > 256 * 1024) return false;
+  try { socket.send(JSON.stringify(command)); return true; }
+  catch { return false; }
 }
 
 function open(): void {
   if (!wanted) return;
+  const generation = ++dialGeneration;
   useSessionStore.getState().setLink("connecting", attempt);
+  if (authorize) {
+    void authorize().then(() => { if (wanted && generation === dialGeneration) openSocket(); }).catch(() => {
+      if (wanted && generation === dialGeneration) scheduleRetry();
+    });
+  } else openSocket();
+}
+
+function scheduleRetry(): void {
+  const delay = Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS);
+  attempt += 1;
+  useSessionStore.getState().setLink("closed", attempt);
+  retryTimer = setTimeout(open, delay);
+}
+
+function openSocket(): void {
   const ws = new WebSocket(target);
   socket = ws;
 
@@ -83,6 +115,9 @@ function open(): void {
     if (!current()) return;
     attempt = 0;
     useSessionStore.getState().setLink("open", 0);
+    for (const [id, capture] of pendingCaptureEnds) {
+      if (sendCommand({ cmd: "audio.capture.end", capture })) pendingCaptureEnds.delete(id);
+    }
   };
   ws.onmessage = (frame: MessageEvent<string>) => {
     if (!current()) return;
@@ -99,9 +134,6 @@ function open(): void {
       return;
     }
     // The attempt is counted before the wait, so the badge describes the failure the user is seeing.
-    const delay = Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS);
-    attempt += 1;
-    useSessionStore.getState().setLink("closed", attempt);
-    retryTimer = setTimeout(open, delay);
+    scheduleRetry();
   };
 }

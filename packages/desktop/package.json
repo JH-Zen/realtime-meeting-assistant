@@ -1,0 +1,11 @@
+{
+  "name": "@rcc/desktop",
+  "version": "0.1.0-desktop-preview.11",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

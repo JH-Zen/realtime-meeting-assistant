@@ -1,6 +1,9 @@
-const host = window.location.hostname || "127.0.0.1";
-const backendPort = 8787;
+import { backendUrls } from "./runtimeUrls";
 
-/** The backend is loopback-only in Phase 1 and the dev server is another origin, hence absolute URLs. */
-export const API_BASE: string = import.meta.env.VITE_API_BASE ?? `http://${host}:${backendPort}`;
-export const WS_URL: string = import.meta.env.VITE_WS_URL ?? `ws://${host}:${backendPort}/ws`;
+const urls = backendUrls(window.location.href || "http://127.0.0.1:8787/", window.rccDesktop ? {} : {
+  dev: import.meta.env.DEV,
+  apiBase: import.meta.env.VITE_API_BASE,
+  wsUrl: import.meta.env.VITE_WS_URL,
+});
+export const API_BASE = urls.apiBase;
+export const WS_URL = urls.wsUrl;

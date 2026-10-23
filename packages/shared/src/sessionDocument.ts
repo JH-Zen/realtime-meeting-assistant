@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AudioGapSchema } from "./audio.js";
 import {
   MindMapEdgeSchema,
   MindMapNodeSchema,
@@ -59,6 +60,8 @@ export const SessionDocumentSchema = z.object({
   exportedAt: z.number(),
   session: SessionSchema,
   transcripts: z.array(TranscriptSegmentSchema),
+  /** Additive v1 field. Old files have unknown continuity, never inferred to have no losses. */
+  audioGaps: z.array(AudioGapSchema).max(100_000).optional(),
   nodes: z.array(MindMapNodeSchema),
   edges: z.array(MindMapEdgeSchema).default([]),
   /** Dragged positions only, matching the wire convention in `pinnedPositions()` — a layout-derived
@@ -90,6 +93,8 @@ export function sessionDocumentIssues(document: SessionDocument): string[] {
   checkUnique("transcripts", transcripts.map((segment) => segment.id));
   checkUnique("summaries", summaries.map((block) => block.id));
   checkUnique("questions", exchanges.map((entry) => entry.question.id));
+  checkUnique("audioGaps", (document.audioGaps ?? []).map((gap) => gap.id));
+  if (document.audioGaps?.some((gap) => gap.sessionId !== session.id)) issues.push("audioGaps: rows from another session cannot be imported");
 
   const nodeIds = new Set(nodes.map((node) => node.id));
   for (const node of nodes) {

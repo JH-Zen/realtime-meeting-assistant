@@ -1,37 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseEnv } from "node:util";
 
 /**
  * Configuration is read once at boot and frozen. No environment variable is read anywhere else,
  * so a typo in `.env` fails at startup rather than at 03:00 during a recording.
  */
-
-function str(name: string, fallback: string): string {
-  const value = process.env[name];
-  return value === undefined || value === "" ? fallback : value;
-}
-
-function int(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) throw new Error(`${name} must be an integer, got "${raw}"`);
-  return parsed;
-}
-
-function bool(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  return /^(1|true|yes|on)$/i.test(raw);
-}
-
-function float(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed)) throw new Error(`${name} must be a number, got "${raw}"`);
-  return parsed;
-}
 
 export interface BackendConfig {
   host: string;
@@ -135,13 +109,40 @@ export interface BackendConfig {
 }
 
 export function loadConfig(cwd: string = process.cwd()): BackendConfig {
-  const envFile = resolve(cwd, ".env");
-  if (existsSync(envFile)) process.loadEnvFile(envFile);
+  // The desktop owns a separate configuration/data root. Browser development keeps the original rule.
+  cwd = process.env.RCC_DESKTOP_DATA_ROOT ?? cwd;
+  const envFile = process.env.RCC_CONFIG_FILE ?? resolve(cwd, ".env");
+  const fileValues = existsSync(envFile) ? parseEnv(readFileSync(envFile, "utf8")) : {};
+  return parseConfig({ ...fileValues, ...process.env }, cwd);
+}
+
+/** Pure parsing makes precedence, modes and invalid inputs testable without touching user config. */
+export function parseConfig(values: NodeJS.ProcessEnv, cwd: string = process.cwd()): BackendConfig {
+  const str = (name: string, fallback: string): string => values[name]?.trim() || fallback;
+  const int = (name: string, fallback: number, min = 1, max = 2_147_483_647): number => {
+    const raw = str(name, String(fallback));
+    const parsed = Number(raw);
+    if (!/^[+-]?\d+$/.test(raw) || !Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+      throw new Error(`${name} must be an integer in [${min}, ${max}]`);
+    }
+    return parsed;
+  };
+  const bool = (name: string, fallback: boolean): boolean => {
+    const raw = str(name, String(fallback)).toLowerCase();
+    if (["1", "true", "yes", "on"].includes(raw)) return true;
+    if (["0", "false", "no", "off"].includes(raw)) return false;
+    throw new Error(`${name} must be true or false (1/0, yes/no, on/off are also accepted)`);
+  };
+  const float = (name: string, fallback: number, min: number, max: number): number => {
+    const parsed = Number(str(name, String(fallback)));
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) throw new Error(`${name} must be a number in [${min}, ${max}]`);
+    return parsed;
+  };
 
   const mockLlm = bool("MOCK_LLM", true);
-  return {
+  const config: BackendConfig = {
     host: str("HOST", "127.0.0.1"),
-    port: int("PORT", 8787),
+    port: int("PORT", 8787, 0, 65535),
     dbPath: resolve(cwd, str("DB_PATH", "var/rcc.sqlite")),
     staticDir: resolve(cwd, str("STATIC_DIR", "packages/frontend/dist")),
     mockStt: bool("MOCK_STT", true),
@@ -156,7 +157,7 @@ export function loadConfig(cwd: string = process.cwd()): BackendConfig {
       model: str("LLM_MODEL", "deepseek-chat"),
       timeoutMs: int("LLM_TIMEOUT_MS", 30000),
       // §45: bounded retry, never an unbounded queue.
-      maxRetries: int("LLM_MAX_RETRIES", 2),
+      maxRetries: int("LLM_MAX_RETRIES", 2, 0, 10),
       disableThinking: bool("LLM_DISABLE_THINKING", true),
     },
     mindmap: {
@@ -166,9 +167,9 @@ export function loadConfig(cwd: string = process.cwd()): BackendConfig {
     },
     memory: {
       windowSec: int("SUMMARY_WINDOW_SEC", 240),
-      mergeFactor: int("SUMMARY_MERGE_FACTOR", 4),
+      mergeFactor: int("SUMMARY_MERGE_FACTOR", 4, 2, 100),
       minSegments: int("SUMMARY_MIN_SEGMENTS", 1),
-      maxLevel: int("SUMMARY_MAX_LEVEL", 2),
+      maxLevel: int("SUMMARY_MAX_LEVEL", 2, 0, 10),
     },
     hotContextSec: int("HOT_CONTEXT_SEC", 240),
     embedding: {
@@ -190,14 +191,27 @@ export function loadConfig(cwd: string = process.cwd()): BackendConfig {
        *  0.1 is the Mock floor only: measured on bge-m3, the answer line scores 0.87~0.96, same-topic
        *  distractors 0.71~0.77 and a fully off-topic question still reaches 0.66 — so a real model
        *  needs ~0.75, and the default stays low because `MOCK_EMBEDDING=true` ships. */
-      minScore: float("RETRIEVAL_MIN_SCORE", 0.1),
+      minScore: float("RETRIEVAL_MIN_SCORE", 0.1, -1, 1),
       batchSize: int("EMBED_BATCH_SIZE", 16),
       /** Queue bound: a slow model must not turn a two-hour talk into an unbounded backlog (Test F). */
       maxPending: int("RETRIEVAL_MAX_PENDING", 512),
     },
     mockSttSpeed: int("MOCK_STT_SPEED", 1),
-    mockSttRepeat: int("MOCK_STT_REPEAT", 1),
-    qa: { minIntervalMs: int("QA_MIN_INTERVAL_MS", 1500) },
+    mockSttRepeat: int("MOCK_STT_REPEAT", 1, 0),
+    qa: { minIntervalMs: int("QA_MIN_INTERVAL_MS", 1500, 0) },
     observability: { loopDelayReportMs: int("LOOP_DELAY_REPORT_MS", 10000) },
   };
+  if (!["127.0.0.1", "localhost", "::1"].includes(config.host)) throw new Error("HOST must be a loopback address (127.0.0.1, localhost or ::1)");
+  if (config.stt.sampleRate !== 16000) throw new Error("STT_SAMPLE_RATE must be 16000 to match microphone PCM output");
+  const checkUrl = (name: string, value: string, protocols: string[], local = false) => {
+    let url: URL;
+    try { url = new URL(value); } catch { throw new Error(`${name} must be a valid URL`); }
+    if (!protocols.includes(url.protocol) || url.username || url.password ||
+      (local && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) throw new Error(`${name} has an unsupported protocol, credentials or host`);
+  };
+  checkUrl("STT_WS_URL", config.stt.wsUrl, ["ws:", "wss:"], true);
+  checkUrl("LLM_BASE_URL", config.llm.baseUrl, ["http:", "https:"]);
+  checkUrl("EMBED_REMOTE_HOST", config.embedding.remoteHost, ["http:", "https:"]);
+  if (!config.mockLlm && !config.llm.apiKey) throw new Error("MOCK_LLM=false requires LLM_API_KEY; enable MOCK_LLM=true for simulated answers");
+  return config;
 }

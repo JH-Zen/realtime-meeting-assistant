@@ -16,7 +16,8 @@ export class MockSTTProvider implements STTProvider {
   readonly name = "mock";
   private partialCallbacks: Array<(segment: TranscriptSegment) => void> = [];
   private finalCallbacks: Array<(segment: TranscriptSegment) => void> = [];
-  private timers: NodeJS.Timeout[] = [];
+  private timers = new Set<{ remaining: number; due: number; handle: NodeJS.Timeout | null; action: () => void }>();
+  private paused = false;
   private connected = false;
   private stopped = false;
   private startedAt = 0;
@@ -31,9 +32,40 @@ export class MockSTTProvider implements STTProvider {
 
   async connect(): Promise<void> {
     if (this.connected) return;
+    this.stopped = false;
     this.connected = true;
     this.startedAt = Date.now();
     this.schedulePass(0);
+  }
+
+  private schedule(action: () => void, delay: number): void {
+    const task = { remaining: delay, due: 0, handle: null as NodeJS.Timeout | null, action };
+    this.timers.add(task);
+    if (!this.paused) this.arm(task);
+  }
+
+  private arm(task: { remaining: number; due: number; handle: NodeJS.Timeout | null; action: () => void }): void {
+    task.due = Date.now() + task.remaining;
+    task.handle = setTimeout(() => {
+      this.timers.delete(task);
+      if (!this.stopped && !this.paused) task.action();
+    }, task.remaining);
+  }
+
+  pause(): void {
+    if (this.paused || this.stopped) return;
+    this.paused = true;
+    for (const task of this.timers) {
+      task.remaining = Math.max(0, task.due - Date.now());
+      if (task.handle) clearTimeout(task.handle);
+      task.handle = null;
+    }
+  }
+
+  resume(): void {
+    if (!this.paused || this.stopped) return;
+    this.paused = false;
+    for (const task of this.timers) this.arm(task);
   }
 
   /**
@@ -52,8 +84,7 @@ export class MockSTTProvider implements STTProvider {
       for (let step = 1; step <= MOCK_PARTIAL_STEPS; step++) {
         const atSec = segmentStart + (step * line.durationSec) / (MOCK_PARTIAL_STEPS + 1);
         const visible = line.text.slice(0, Math.ceil((line.text.length * step) / MOCK_PARTIAL_STEPS));
-        this.timers.push(
-          setTimeout(() => {
+        this.schedule(() => {
             const partial: TranscriptSegment = {
               id,
               sessionId: this.sessionId,
@@ -63,11 +94,9 @@ export class MockSTTProvider implements STTProvider {
               createdAt: this.startedAt + Math.round(atSec * 1000),
             };
             for (const cb of this.partialCallbacks) cb(partial);
-          }, ms(atSec - offset, this.speed)),
-        );
+          }, ms(atSec - offset, this.speed));
       }
-      this.timers.push(
-        setTimeout(() => {
+      this.schedule(() => {
           const final: TranscriptSegment = {
             id,
             sessionId: this.sessionId,
@@ -79,12 +108,10 @@ export class MockSTTProvider implements STTProvider {
             createdAt: this.startedAt + Math.round(segmentEnd * 1000),
           };
           for (const cb of this.finalCallbacks) cb(final);
-        }, ms(segmentEnd - offset, this.speed)),
-      );
+        }, ms(segmentEnd - offset, this.speed));
     }
     if (this.repeat === 0 || pass + 1 < this.repeat) {
-      const next = setTimeout(() => this.schedulePass(pass + 1), ms(MOCK_SCRIPT_SPAN_SEC, this.speed) + 1);
-      this.timers.push(next);
+      this.schedule(() => this.schedulePass(pass + 1), ms(MOCK_SCRIPT_SPAN_SEC, this.speed) + 1);
     }
   }
 
@@ -95,8 +122,8 @@ export class MockSTTProvider implements STTProvider {
   async disconnect(): Promise<void> {
     this.connected = false;
     this.stopped = true;
-    for (const timer of this.timers) clearTimeout(timer);
-    this.timers = [];
+    for (const timer of this.timers) if (timer.handle) clearTimeout(timer.handle);
+    this.timers.clear();
   }
 
   onPartial(callback: (segment: TranscriptSegment) => void): void {

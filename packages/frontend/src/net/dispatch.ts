@@ -1,6 +1,6 @@
 import type { ServerEvent } from "@rcc/shared";
 import { useGraphStore } from "../state/graphStore";
-import { useSessionStore } from "../state/sessionStore";
+import { belongsToSession, useSessionStore } from "../state/sessionStore";
 
 /**
  * One place decides which store a validated frame writes to. The graph reducer is shared with the
@@ -9,8 +9,10 @@ import { useSessionStore } from "../state/sessionStore";
 export function dispatchEvent(event: ServerEvent): void {
   const graph = useGraphStore.getState();
   const session = useSessionStore.getState();
+  if (!belongsToSession(event, session.sessionId)) return;
 
-  if (event.kind === "recording.started" && event.sessionId !== session.sessionId) {
+  if ((event.kind === "recording.started" && event.sessionId !== session.sessionId) ||
+      (event.kind === "session.snapshot" && ((event.sessionId ?? null) !== session.sessionId || event.state === "idle"))) {
     graph.reset();
   }
 

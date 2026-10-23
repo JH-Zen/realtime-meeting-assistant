@@ -4,6 +4,7 @@ import type { SqliteQaRepository } from "../store/qaRepository.js";
 import type { SqliteSessionRepository } from "../store/sessionRepository.js";
 import type { SqliteSummaryRepository } from "../store/summaryRepository.js";
 import type { SqliteTranscriptRepository } from "../store/transcriptRepository.js";
+import type { SqliteAudioGapRepository } from "../store/audioGapRepository.js";
 
 /**
  * Reads one finished session back out as a `SessionDocument` (§13 OPEN-10). Every repository method
@@ -17,6 +18,7 @@ export interface ExportRepositories {
   graphs: SqliteGraphRepository;
   summaries: SqliteSummaryRepository;
   qa: SqliteQaRepository;
+  audioGaps?: SqliteAudioGapRepository;
 }
 
 /** `undefined` when no such session exists — the caller turns that into a 404, not an empty file. */
@@ -40,6 +42,7 @@ export function exportSessionDocument(
     exportedAt: now,
     session,
     transcripts: repos.transcripts.listFinal(sessionId),
+    audioGaps: repos.audioGaps?.list(sessionId) ?? [],
     nodes: repos.graphs.loadNodes(sessionId),
     edges: repos.graphs.loadEdges(sessionId),
     positions,

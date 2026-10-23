@@ -19,7 +19,8 @@ if (!port) throw new Error("embeddingWorker must run inside a worker_thread");
 
 const { model, dtype, cacheDir, remoteHost } = workerData as EmbeddingWorkerData;
 
-env.allowRemoteModels = true;
+// Desktop runs never fetch model weights implicitly. Explicit browser/model provisioning is unchanged.
+env.allowRemoteModels = !process.env.RCC_DESKTOP_INSTANCE;
 env.allowLocalModels = false;
 env.useFSCache = true;
 env.cacheDir = cacheDir;

@@ -31,6 +31,9 @@ export class QaCore {
   /** Admission clock: when the last *accepted* question started, not when the last answer finished. */
   private lastAcceptedAt = 0;
   private closed = false;
+  private readonly pending = new Set<string>();
+
+  get pendingQuestionIds(): string[] { return [...this.pending]; }
 
   constructor(
     private readonly bus: AppBus,
@@ -64,6 +67,7 @@ export class QaCore {
     }
     this.lastAcceptedAt = now;
     this.inFlight += 1;
+    this.pending.add(questionId);
     const startedAt = now;
     const hotContext = this.transcript.window(this.sessionId, this.config.hotContextSec);
     // Test D is the reason this happens before the snapshot: Hot Context only reaches back a few
@@ -82,6 +86,7 @@ export class QaCore {
     // gate reads, and a leak would have the next session's questions refused as `busy`.
     if (this.closed) {
       this.inFlight -= 1;
+      this.pending.delete(questionId);
       return;
     }
     const snapshot = buildContextSnapshot({
@@ -129,7 +134,7 @@ export class QaCore {
         if (this.closed) break;
         text = chunk;
         if (ttftMs === undefined) ttftMs = Date.now() - startedAt;
-        this.bus.emit("answer.token", { questionId, text, ...(ttftMs === undefined ? {} : { ttftMs }) });
+        this.bus.emit("answer.token", { sessionId: this.sessionId, questionId, text, ...(ttftMs === undefined ? {} : { ttftMs }) });
       }
 
       const finishedAt = Date.now();
@@ -176,6 +181,7 @@ export class QaCore {
       // a disposed one turns a cancelled recording into an error the next session shows in its panel.
       if (!this.closed) {
         this.bus.emit("module.error", {
+          sessionId: this.sessionId,
           module: "qa",
           code: "answer_failed",
           message,
@@ -209,6 +215,7 @@ export class QaCore {
       metric("qa_answer", { ok: false, provider: this.llm.name, latencyMs: durationMs });
     } finally {
       this.inFlight -= 1;
+      this.pending.delete(questionId);
     }
   }
 

@@ -59,6 +59,7 @@ export class TranscriptCore {
       const message = error instanceof Error ? error.message : String(error);
       log.warn("final segment not persisted", { sessionId: final.sessionId, id: final.id, message });
       this.bus.emit("module.error", {
+        sessionId: final.sessionId,
         module: "transcript",
         code: "append_failed",
         message,

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>实时会议助手 · 工作台预览</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <svg class="icon-defs" aria-hidden="true"><defs>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.2"/><rect x="14" y="4" width="6" height="6" rx="1.2"/><rect x="4" y="14" width="6" height="6" rx="1.2"/><rect x="14" y="14" width="6" height="6" rx="1.2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M13 3H6a1 1 0 0 0-1 1v16h14V9l-6-6Z"/><path d="M13 3v6h6M8 13h8m-8 4h6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3ZM20 2v4m-2-2h4"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-5 5 5-5 5 5"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v12m-4-4 4 4 4-4M5 17v3h14v-3"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h3m4 0h9M4 17h9m4 0h3"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10Z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><rect x="3" y="9" width="6" height="6" rx="1"/><rect x="16" y="3" width="5" height="5" rx="1"/><rect x="16" y="16" width="5" height="5" rx="1"/><path d="M9 12h3V5.5h4M12 12v6.5h4"/></symbol>
+    <symbol id="i-text" viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h13"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v3m-4 0h8"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v12h5"/></symbol>
+  </defs></svg>
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="brand"><span class="brand-mark"><svg><use href="#i-wave"/></svg></span><span>听见<span class="brand-divider">/</span><span class="brand-sub">实时会议助手</span></span></div>
+      <div class="title-context"><span class="context-dot"></span> 个人工作空间 <span class="context-divider">/</span> 会议工作台</div>
+      <div class="title-actions"><span class="preview-label">交互预览 · 示例数据</span><button class="icon-button" id="theme-toggle" aria-label="切换明暗主题" title="切换明暗主题"><svg><use href="#i-moon"/></svg></button><button class="icon-button" id="sidebar-toggle" aria-label="显示或隐藏会议列表" title="显示或隐藏会议列表"><svg><use href="#i-panel"/></svg></button></div>
+    </header>
+    <div class="workspace">
+      <nav class="activity-rail" aria-label="工作区导航">
+        <button class="rail-button active" id="home-button" aria-label="会议工作台" title="会议工作台"><svg><use href="#i-grid"/></svg><span class="rail-indicator"></span></button>
+        <button class="rail-button" id="history-button" aria-label="查找历史会议" title="查找历史会议"><svg><use href="#i-clock"/></svg></button>
+        <div class="rail-spacer"></div>
+        <button class="rail-button" id="settings-button" aria-label="预览设置" title="预览设置"><svg><use href="#i-sliders"/></svg></button>
+        <span class="profile-avatar" title="本地个人工作空间">我</span>
+      </nav>
+      <aside class="sidebar" aria-label="会议列表">
+        <div class="sidebar-heading"><h2>我的会议</h2><span class="subtle-count" id="meeting-count">3</span></div>
+        <button class="new-meeting" id="new-meeting"><svg><use href="#i-plus"/></svg> 新建会议 <span>＋</span></button>
+        <label class="search-box"><svg><use href="#i-search"/></svg><input id="meeting-search" placeholder="搜索会议…" aria-label="搜索会议"><kbd>/</kbd></label>
+        <div class="list-group-label">今天 <span>1</span></div>
+        <div id="today-meetings" class="meeting-list"></div>
+        <div class="list-group-label earlier-label">更早 <span>2</span></div>
+        <div id="past-meetings" class="meeting-list"></div>
+        <p id="search-empty" class="search-empty" hidden>没有找到相关会议</p>
+        <div class="sidebar-spacer"></div>
+        <div class="local-note"><span class="local-icon"><svg><use href="#i-file"/></svg></span><div>留住每一个好想法<small>让记录，成为下一步的开始</small></div></div>
+        <button class="sidebar-footer" id="workspace-info"><span class="workspace-avatar">P</span><span>个人工作空间<small>本地预览</small></span><svg><use href="#i-chevron"/></svg></button>
+      </aside>
+      <main class="main-area">
+        <div class="workspace-toolbar"><div class="breadcrumb"><svg><use href="#i-file"/></svg><span>我的会议</span><svg class="tiny"><use href="#i-chevron"/></svg><span id="crumb-title">产品讨论</span></div><div class="toolbar-actions"><button class="text-button" id="export-button"><svg><use href="#i-down"/></svg>导出</button><button class="icon-button" id="assistant-toggle" aria-label="显示或隐藏 AI 助手" title="显示或隐藏 AI 助手"><svg><use href="#i-panel"/></svg></button></div></div>
+        <div class="meeting-header"><div class="meeting-eyebrow"><span id="meeting-state" class="state-badge"><i></i>示例演示</span><span class="meeting-category">PRODUCT MEETING</span></div><h1 id="meeting-title">实时会议助手 · 产品讨论</h1><div class="meeting-meta"><span id="meeting-date">2026年10月22日</span><i></i><span id="meeting-duration">24 分钟</span><i></i><div class="attendees"><span class="mini-avatar mint">林</span><span class="mini-avatar lavender">周</span><span class="mini-avatar peach">陈</span><span>3 位参会者（示例）</span></div></div></div>
+        <div class="view-tabs" role="tablist" aria-label="会议内容"><button class="view-tab active" role="tab" id="tab-transcript" aria-controls="content-transcript" aria-selected="true" data-view="transcript"><svg><use href="#i-text"/></svg>实时转写<span class="tab-count" id="transcript-count">5</span></button><button class="view-tab" role="tab" id="tab-summary" aria-controls="content-summary" aria-selected="false" data-view="summary"><svg><use href="#i-file"/></svg>会议纪要</button><button class="view-tab" role="tab" id="tab-map" aria-controls="content-map" aria-selected="false" data-view="map"><svg><use href="#i-map"/></svg>思维导图</button><span class="tabs-spacer"></span><span class="saved-state"><svg><use href="#i-check"/></svg>示例内容</span></div>
+        <div class="content-scroll" id="content-scroll">
+          <section class="view-content" id="content-transcript" role="tabpanel" aria-labelledby="tab-transcript"><div class="transcript-intro"><div class="subheading"><svg><use href="#i-wave"/></svg>每个想法，都有迹可循</div><button class="subtle-button" id="jump-latest">跳到最新 ↓</button></div><div id="transcript-list"></div><div class="listening-line" id="listening-line"><span class="listening-wave"><b></b><b></b><b></b><b></b><b></b></span><span id="listening-text">演示中，想法正在继续…</span></div></section>
+          <section class="view-content summary-view" id="content-summary" role="tabpanel" aria-labelledby="tab-summary" hidden></section>
+          <section class="view-content map-view" id="content-map" role="tabpanel" aria-labelledby="tab-map" hidden></section>
+        </div>
+        <div class="recording-area"><div class="recording-dock"><span class="recording-mic"><svg><use href="#i-mic"/></svg></span><div class="recording-info"><strong id="recording-label">会议演示中</strong><span>仅示例 · 未采集麦克风</span></div><div class="audio-wave" id="audio-wave" aria-hidden="true"></div><span class="recording-time" id="recording-time">24:08</span><span class="dock-separator"></span><button class="pause-button" id="pause-button" aria-label="暂停演示" title="暂停演示"><span class="pause-glyph"></span></button><button class="end-button" id="end-button"><span></span>结束演示</button></div><p class="dock-caption">专注讨论，让想法自然发生。</p></div>
+      </main>
+      <aside class="assistant-panel" aria-label="AI 会议助手"><div class="assistant-heading"><div><svg><use href="#i-spark"/></svg><h2>会议助手</h2><span class="assistant-dot"></span></div><button class="icon-button" id="assistant-close" aria-label="收起 AI 助手" title="收起 AI 助手"><svg><use href="#i-close"/></svg></button></div><div class="assistant-context"><svg><use href="#i-file"/></svg><span>当前会议</span><span class="context-ready">已关联示例</span></div><div class="assistant-messages" id="assistant-messages" aria-live="polite"></div><div class="assistant-bottom"><div class="suggestions"><button data-question="目前达成了哪些共识？">整理共识</button><button data-question="还有哪些待办事项？">提取待办</button><button data-question="这次讨论的重点是什么？">回顾重点</button></div><form class="composer" id="ask-form"><label class="sr-only" for="question-input">向会议助手提问</label><textarea id="question-input" placeholder="就这场会议，问点什么…" rows="2"></textarea><div class="composer-bottom"><span><svg><use href="#i-spark"/></svg>会议问答 <span class="demo-chip">演示</span></span><button type="submit" id="send-button" class="send-button" aria-label="发送问题" disabled><svg><use href="#i-arrow"/></svg></button></div></form><p class="assistant-caption">预设回复演示 · 关键内容请核对原文</p></div></aside>
+    </div>
+    <footer class="statusbar"><div><span class="status-dot"></span>界面预览<span class="status-separator">|</span><span>示例内容，不连接会议服务</span></div><span>听见 · WORKSPACE <span class="status-version">DESIGN 01</span></span></footer>
+  </div>
+  <dialog id="settings-dialog"><form method="dialog"><div class="dialog-heading"><h2>预览设置</h2><button class="icon-button" aria-label="关闭设置"><svg><use href="#i-close"/></svg></button></div><p>这是一个独立的界面原型，所有会议、转写与问答均为示例数据。</p><div class="setting-row"><span>界面主题</span><button type="button" class="text-button" id="dialog-theme">切换明暗主题</button></div><div class="setting-row"><span>AI 侧栏</span><button type="button" class="text-button" id="dialog-assistant">显示 / 隐藏</button></div><p class="dialog-note">本页不会录音，不读取历史会议，也不修改已安装的应用。</p><button class="dialog-done">完成</button></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="./app.js"></script>
+</body>
+</html>

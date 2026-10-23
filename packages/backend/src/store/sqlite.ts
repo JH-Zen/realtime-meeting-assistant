@@ -14,7 +14,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   title       TEXT,
   started_at  INTEGER NOT NULL,
   ended_at    INTEGER,
+  duration_sec REAL,
   status      TEXT NOT NULL CHECK (status IN ('recording','paused','completed'))
+);
+
+CREATE TABLE IF NOT EXISTS workspace_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS transcript_segments (
@@ -101,6 +107,18 @@ CREATE TABLE IF NOT EXISTS graph_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_ops_session ON graph_operations (session_id, created_at);
 
+-- A successful empty model response still processed source text. Node citations alone cannot
+-- represent that fact. Additive only: old maps remain explicitly untracked until user recovery.
+CREATE TABLE IF NOT EXISTS mindmap_processed_segments (
+  session_id TEXT NOT NULL,
+  segment_id TEXT NOT NULL,
+  response_id TEXT NOT NULL,
+  processed_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, segment_id),
+  FOREIGN KEY (session_id, segment_id)
+    REFERENCES transcript_segments(session_id, id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS questions (
   id          TEXT PRIMARY KEY,
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -108,6 +126,19 @@ CREATE TABLE IF NOT EXISTS questions (
   created_at  INTEGER NOT NULL,
   snapshot_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS audio_gaps (
+  id TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  certainty TEXT NOT NULL,
+  start_time REAL NOT NULL,
+  end_time REAL NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_audio_gaps_time ON audio_gaps(session_id, start_time);
 
 CREATE TABLE IF NOT EXISTS answers (
   id          TEXT PRIMARY KEY,
@@ -119,6 +150,17 @@ CREATE TABLE IF NOT EXISTS answers (
   degraded    INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recovery_tasks (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('retrieval','mindmap')),
+  status TEXT NOT NULL CHECK (status IN ('running','succeeded','incomplete','failed','interrupted')),
+  started_at REAL NOT NULL,
+  task_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_tasks_session_time
+  ON recovery_tasks(session_id, started_at DESC, id DESC);
 `;
 
 export interface Sqlite {
@@ -153,6 +195,7 @@ export function openSqlite(dbPath: string): Sqlite {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec(SCHEMA);
+  ensureColumn(db, "sessions", "duration_sec", "ALTER TABLE sessions ADD COLUMN duration_sec REAL");
   ensureColumn(db, "summary_blocks", "source_block_ids", "ALTER TABLE summary_blocks ADD COLUMN source_block_ids TEXT NOT NULL DEFAULT '[]'");
   dropColumn(db, "transcript_segments", "speaker_id");
   return {

@@ -63,7 +63,7 @@ class FakeSocket {
 }
 
 interface ConnectionModule {
-  connect(url: string): void;
+  connect(url: string, prepare?: () => Promise<void>): void;
   disconnect(): void;
   sendCommand(command: unknown): boolean;
 }
@@ -202,6 +202,8 @@ describe("websocket connection state machine", () => {
     const socket = FakeSocket.instances[0];
     socket?.accept();
 
+    // The real server establishes selection before sending any session-scoped frames.
+    socket?.emit({ kind: "session.snapshot", sessionId: "s1", state: "recording", elapsedSec: 0, stt: "idle", serverTime: 0 });
     socket?.emit(segmentEvent);
     socket?.emit({ kind: "transcript.final", segment: { id: 1 } });
 
@@ -222,5 +224,47 @@ describe("websocket connection state machine", () => {
     socket?.fail();
     expect(connection.sendCommand({ cmd: "recording.pause" })).toBe(false);
     expect(store.getState().link).toBe("closed");
+  });
+
+  it("does not open a socket when authorization completes after cancellation", async () => {
+    const { connection } = await load();
+    let authorize!: () => void;
+    connection.connect("ws://h/ws", () => new Promise<void>((done) => { authorize = done; }));
+    expect(FakeSocket.instances).toHaveLength(0);
+    connection.disconnect();
+    authorize();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeSocket.instances).toHaveLength(0);
+  });
+
+  it("ignores an earlier authorization after switching the target", async () => {
+    const { connection } = await load();
+    let authorizeFirst!: () => void;
+    connection.connect("ws://old/ws", () => new Promise<void>((done) => { authorizeFirst = done; }));
+    connection.connect("ws://new/ws", () => Promise.resolve());
+    await vi.advanceTimersByTimeAsync(0);
+    authorizeFirst();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeSocket.instances.map((entry) => entry.url)).toEqual(["ws://new/ws"]);
+    connection.disconnect();
+  });
+
+  it("retries failed authorization with bounded backoff and refreshes it after a link drop", async () => {
+    const { connection, store } = await load();
+    const prepare = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("not ready")).mockResolvedValue(undefined);
+    connection.connect("ws://h/ws", prepare);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getState().link).toBe("closed");
+    expect(prepare).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(FakeSocket.instances).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeSocket.instances).toHaveLength(1);
+    FakeSocket.instances[0]?.accept();
+    FakeSocket.instances[0]?.fail();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(prepare).toHaveBeenCalledTimes(3);
+    expect(FakeSocket.instances).toHaveLength(2);
+    connection.disconnect();
   });
 });

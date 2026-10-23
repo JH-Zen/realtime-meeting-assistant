@@ -1,0 +1,86 @@
+name: Windows desktop preview
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/desktop-preview.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-desktop-preview
+  cancel-in-progress: false
+
+jobs:
+  desktop-preview:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.7.0
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          node -e "const fs=require('node:fs');const p='package-lock.json';fs.writeFileSync(p,fs.readFileSync(p,'utf8').replaceAll('https://registry.npmmirror.com/','https://registry.npmjs.org/'));"
+          npm ci --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+          node node_modules/electron/install.js
+          if ($LASTEXITCODE -ne 0) { throw 'Electron preparation failed' }
+      - name: Check and build shared first
+        shell: pwsh
+        run: |
+          npm run build -w @rcc/shared
+          if ($LASTEXITCODE -ne 0) { throw 'Shared build failed' }
+          foreach ($task in @('typecheck', 'lint', 'build')) {
+            npm run $task
+            if ($LASTEXITCODE -ne 0) { throw "$task failed" }
+          }
+          npm test -- --maxWorkers=2
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+      - name: Package desktop installer
+        shell: pwsh
+        run: |
+          npm run package:desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop packaging failed' }
+          $version = (Get-Content packages/desktop/package.json -Raw | ConvertFrom-Json).version
+          "DESKTOP_VERSION=$version" >> $env:GITHUB_ENV
+          "DESKTOP_TAG=v$version" >> $env:GITHUB_ENV
+      - name: Verify actual installed desktop
+        shell: pwsh
+        run: |
+          $installer = "outputs/desktop-preview/v$env:DESKTOP_VERSION/RCC-Desktop-Preview-$env:DESKTOP_VERSION-Setup.exe"
+          $verificationRoot = Join-Path $env:RUNNER_TEMP '桌面安装验证 中文路径'
+          node tools/verify-desktop.mjs "--installer=$installer" --install-mode=wizard "--work=$verificationRoot"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed desktop verification failed; release not published' }
+          $report = Get-Content -LiteralPath (Join-Path $verificationRoot 'verification.json') -Raw | ConvertFrom-Json
+          if (-not $report.ok -or $report.desktopVersion -ne $env:DESKTOP_VERSION) { throw 'Invalid installed report' }
+          $summary = @{version=$env:DESKTOP_VERSION;sourceCommit=$env:GITHUB_SHA;platform='win32-x64';buildOrigin='GitHub Actions';installedDesktopChecks=$report.checks.Count;installerSha256=$report.installerSha256;hardwareMicrophone='not-tested';realStt='not-tested';paidModels='not-called';fullProductAcceptance=$false}
+          $summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "outputs/desktop-preview/v$env:DESKTOP_VERSION/validation-summary.json" -Encoding utf8NoBOM
+      - name: Publish verified prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view $env:DESKTOP_TAG --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'Version already exists; existing release will not be replaced' }
+          $dir = "outputs/desktop-preview/v$env:DESKTOP_VERSION"
+          $installer = "$dir/RCC-Desktop-Preview-$env:DESKTOP_VERSION-Setup.exe"
+          $notes = "docs/releases/$env:DESKTOP_TAG.md"
+          if (-not (Test-Path -LiteralPath $notes)) { throw 'Version notes missing' }
+          gh release create $env:DESKTOP_TAG $installer "$installer.sha256" "$dir/validation-summary.json" --target $env:GITHUB_SHA --title "$env:DESKTOP_TAG - Windows 桌面预览" --notes-file $notes --prerelease --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Preview publication failed' }
+      - name: Keep build and failure reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-preview-build-reports
+          path: |
+            outputs/desktop-preview/**
+            ${{ runner.temp }}/桌面安装验证 中文路径/verification.json
+            ${{ runner.temp }}/桌面安装验证 中文路径/installer-logs/**
+          if-no-files-found: ignore

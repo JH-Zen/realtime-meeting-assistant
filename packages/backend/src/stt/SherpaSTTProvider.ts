@@ -1,7 +1,6 @@
-import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 import { z } from "zod";
-import type { SttStatus, TranscriptSegment } from "@rcc/shared";
+import type { AudioGapInput, AudioInputPosition, SttStatus, TranscriptSegment } from "@rcc/shared";
 import { log } from "../observability/log.js";
 import type { STTProvider } from "./STTProvider.js";
 
@@ -33,6 +32,19 @@ const WorkerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("error"), code: z.string(), message: z.string() }),
 ]);
 type WorkerFrame = z.infer<typeof WorkerFrameSchema>;
+
+/** Only metadata is retained. Adjacent PCM frames share one span until the source clock jumps. */
+interface AudioClockSpan {
+  captureId: string;
+  lastSeq: number;
+  workerStart: number;
+  workerEnd: number;
+  sourceStart: number;
+  sourceEnd: number;
+}
+
+const AUDIO_BACKPRESSURE_BYTES = 256 * 1024;
+const CLOCK_EPSILON = 1e-7;
 
 export interface SherpaWorkerOptions {
   url: string;
@@ -77,80 +89,124 @@ export class SherpaSTTProvider implements STTProvider {
   private clockOffsetSec = 0;
   private connectionMaxSeq = 0;
   private connectionMaxEndSec = 0;
+  private connectionSawFrame = false;
+  private sentSamples = 0;
+  private finalizedAudioSec = 0;
+  private audioSpans: AudioClockSpan[] = [];
   private droppedChunks = 0;
   private warnedAboutDrops = false;
   private resolveFlushed: (() => void) | null = null;
   /** Set only while the handshake is waiting for its answer. */
   private pendingFrame: ((frame: WorkerFrame | null) => void) | null = null;
   private lastSocketError = "";
+  private drainingSocket: WebSocket | null = null;
+  private disconnectJob: Promise<void> | null = null;
+  private handshakeFrames: WorkerFrame[] = [];
   private readonly partialCallbacks: Array<(segment: TranscriptSegment) => void> = [];
   private readonly finalCallbacks: Array<(segment: TranscriptSegment) => void> = [];
   private readonly statusCallbacks: Array<(status: SttStatus) => void> = [];
+  private readonly audioGapCallbacks: Array<(gap: AudioGapInput) => void> = [];
 
   constructor(
     private readonly sessionId: string,
     private readonly options: SherpaWorkerOptions,
   ) {}
 
-  async connect(): Promise<void> {
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.socket) return;
     this.closing = false;
+    this.disconnectJob = null;
     this.lastSocketError = "";
-    const model = await this.openOnce();
-    log.info("stt worker connected", { sessionId: this.sessionId, url: this.options.url, model });
+    const abort = () => { void this.disconnect(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const model = await this.openOnce();
+      signal?.throwIfAborted();
+      if (this.closing) throw new DOMException("STT connection cancelled", "AbortError");
+      log.info("stt worker connected", { sessionId: this.sessionId, url: this.options.url, model });
+    } finally { signal?.removeEventListener("abort", abort); }
   }
 
   /** Dial, handshake, and refuse anything the backend cannot honour. Throws without scheduling a retry. */
   private async openOnce(): Promise<string> {
     const socket = new WebSocket(this.options.url, { maxPayload: 8 * 1024 * 1024 });
+    this.sentSamples = 0;
+    this.finalizedAudioSec = 0;
+    this.audioSpans = [];
     this.socket = socket;
     this.handshaking = true;
+    this.handshakeFrames = [];
     // Handlers go on before anything can arrive, so no frame can land between the handshake and the
     // subscription — the worker sends its first results as soon as the socket opens.
     this.watchSocket(socket);
     try {
       const frame = await this.nextFrame(this.options.connectTimeoutMs ?? 5000);
+      if (this.closing || this.socket !== socket) throw new DOMException("STT connection cancelled", "AbortError");
       const ready = frame?.type === "ready" ? frame : null;
       if (!ready) {
-        throw new Error(this.refused(`未收到 worker 的 ready。请先启动：python services/stt-worker/stt_worker.py --model-dir <模型目录>`));
+        throw new Error(this.refused(`未收到 worker 的 ready。请先启动：python services/stt-worker/stt_worker.py --model-dir <模型目录>`, socket));
       }
       if (ready.protocol !== 1) {
-        throw new Error(this.refused(`worker 协议版本 ${ready.protocol} 与后端不匹配（支持 v1）`));
+        throw new Error(this.refused(`worker 协议版本 ${ready.protocol} 与后端不匹配（支持 v1）`, socket));
       }
       if (ready.sampleRate !== this.options.sampleRate) {
         // Accepting it anyway would make every timestamp wrong by the ratio of the two rates.
         throw new Error(
-          this.refused(`worker 以 ${ready.sampleRate} Hz 解码，后端按 ${this.options.sampleRate} Hz 上行音频（STT_SAMPLE_RATE）`),
+          this.refused(`worker 以 ${ready.sampleRate} Hz 解码，后端按 ${this.options.sampleRate} Hz 上行音频（STT_SAMPLE_RATE）`, socket),
         );
       }
       this.ready = true;
+      this.handshaking = false;
+      const pending = this.handshakeFrames;
+      this.handshakeFrames = [];
+      for (const queued of pending) if (queued.type === "partial" || queued.type === "final") this.deliver(queued);
       return ready.model;
     } finally {
-      this.handshaking = false;
+      if (this.socket === socket) this.handshaking = false;
     }
   }
 
   /** Close the half-open socket and build the message the user sees when the worker is unreachable. */
-  private refused(reason: string): string {
-    const socket = this.socket;
+  private refused(reason: string, socket: WebSocket): string {
     // Detach first: the close event of this socket is the failed dial itself, not a lost session.
-    this.socket = null;
+    if (this.socket === socket) this.socket = null;
     this.ready = false;
+    this.handshakeFrames = [];
     socket?.close();
     const detail = this.lastSocketError ? `：${this.lastSocketError}` : "";
     return `无法连接 STT worker（${this.options.url}）${reason}${detail}`;
   }
 
-  sendAudio(data: ArrayBuffer): void {
+  sendAudio(data: ArrayBuffer, position?: AudioInputPosition): void {
+    // Late caller frames after an intentional stop are outside the recording, not an outage.
+    if (this.closing) return;
     const socket = this.socket;
-    if (!socket || !this.ready || socket.readyState !== WebSocket.OPEN) {
-      this.noteDrop();
+    const samples = Math.floor(data.byteLength / 2);
+    const durationSec = samples / this.options.sampleRate;
+    if (!socket || !this.ready || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > AUDIO_BACKPRESSURE_BYTES) {
+      this.noteDrop(position, durationSec);
       return;
     }
-    socket.send(Buffer.from(data));
+    try {
+      socket.send(Buffer.from(data));
+    } catch {
+      this.noteDrop(position, durationSec);
+      return;
+    }
+    const workerStart = this.sentSamples / this.options.sampleRate;
+    this.sentSamples += samples;
+    if (position && durationSec > 0) {
+      this.recordAudioSpan(position, workerStart, this.sentSamples / this.options.sampleRate, durationSec);
+    }
   }
 
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
+    this.disconnectJob ??= this.disconnectOwned();
+    return this.disconnectJob;
+  }
+
+  private async disconnectOwned(): Promise<void> {
     this.closing = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -159,6 +215,13 @@ export class SherpaSTTProvider implements STTProvider {
     const socket = this.socket;
     this.socket = null;
     this.ready = false;
+    this.handshakeFrames = [];
+    if (this.handshaking) {
+      this.pendingFrame?.(null);
+      this.handshaking = false;
+      socket?.terminate();
+      return;
+    }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (socket) socket.close();
       return;
@@ -168,9 +231,13 @@ export class SherpaSTTProvider implements STTProvider {
     const flushed = new Promise<void>((resolve) => {
       this.resolveFlushed = resolve;
     });
+    this.drainingSocket = socket;
     socket.send(JSON.stringify({ type: "flush" }));
-    await Promise.race([flushed, delay(this.options.flushTimeoutMs ?? 2000)]);
+    let timeout: NodeJS.Timeout | undefined;
+    await Promise.race([flushed, new Promise<void>((done) => { timeout = setTimeout(done, this.options.flushTimeoutMs ?? 2000); })]);
+    clearTimeout(timeout);
     this.resolveFlushed = null;
+    this.drainingSocket = null;
     socket.close();
     if (this.droppedChunks > 0) {
       log.warn("stt audio chunks dropped while the worker was unreachable", {
@@ -192,6 +259,10 @@ export class SherpaSTTProvider implements STTProvider {
     this.statusCallbacks.push(callback);
   }
 
+  onAudioGap(callback: (gap: AudioGapInput) => void): void {
+    this.audioGapCallbacks.push(callback);
+  }
+
   /** Resolve with the next validated frame, or `null` if the socket dies or nothing arrives in time. */
   private nextFrame(timeoutMs: number): Promise<WorkerFrame | null> {
     return new Promise((resolve) => {
@@ -207,6 +278,7 @@ export class SherpaSTTProvider implements STTProvider {
 
   private watchSocket(socket: WebSocket): void {
     socket.on("message", (raw: WebSocket.RawData) => {
+      if (socket !== this.socket && socket !== this.drainingSocket) return;
       const frame = parseFrame(raw);
       if (!frame) return;
       // While the handshake is open, the first valid frame is its answer and nothing else.
@@ -215,7 +287,9 @@ export class SherpaSTTProvider implements STTProvider {
         return;
       }
       if (frame.type === "partial" || frame.type === "final") {
-        this.deliver(frame);
+        if (this.handshaking) {
+          if (this.handshakeFrames.length < 64) this.handshakeFrames.push(frame);
+        } else this.deliver(frame);
       } else if (frame.type === "flushed") {
         this.resolveFlushed?.();
       } else if (frame.type === "error") {
@@ -223,11 +297,14 @@ export class SherpaSTTProvider implements STTProvider {
       }
     });
     socket.on("error", (error: Error) => {
+      if (socket !== this.socket || this.closing) return;
       this.lastSocketError = error.message;
       log.warn("stt worker socket error", { sessionId: this.sessionId, error: error.message });
       this.pendingFrame?.(null);
     });
     socket.on("close", () => {
+      if (socket === this.drainingSocket) { this.resolveFlushed?.(); return; }
+      if (socket !== this.socket) return;
       this.pendingFrame?.(null);
       this.handleLost(socket);
     });
@@ -240,14 +317,20 @@ export class SherpaSTTProvider implements STTProvider {
     // A stale socket (already replaced, or the one a failed dial detached) is not this session's loss.
     if (socket !== this.socket) return;
     this.socket = null;
-    this.seqOffset += this.connectionMaxSeq;
+    this.reportUnconfirmedAudio();
+    this.seqOffset += this.connectionMaxSeq || (this.connectionSawFrame ? 1 : 0);
     this.clockOffsetSec += this.connectionMaxEndSec;
     this.connectionMaxSeq = 0;
     this.connectionMaxEndSec = 0;
+    this.connectionSawFrame = false;
+    this.sentSamples = 0;
+    this.finalizedAudioSec = 0;
+    this.audioSpans = [];
     this.scheduleReconnect("STT worker 断开了连接");
   }
 
   private scheduleReconnect(reason: string): void {
+    if (this.closing) return;
     const delays = this.options.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
     if (this.reconnectTimer) return;
     const waitMs = delays[this.reconnectAttempts];
@@ -268,10 +351,12 @@ export class SherpaSTTProvider implements STTProvider {
     this.lastSocketError = "";
     try {
       const model = await this.openOnce();
+      if (this.closing) return;
       this.reconnectAttempts = 0;
       this.reportStatus("connected", `已重连（模型 ${model}）`, 0);
       log.info("stt worker reconnected", { sessionId: this.sessionId, url: this.options.url, model });
     } catch (error) {
+      if (this.closing) return;
       // A dial that dies mid-handshake never reaches `handleLost`, so the next attempt is scheduled here.
       this.scheduleReconnect(error instanceof Error ? error.message : String(error));
     }
@@ -280,17 +365,24 @@ export class SherpaSTTProvider implements STTProvider {
   private deliver(frame: Extract<WorkerFrame, { type: "partial" | "final" }>): void {
     const text = frame.text.trim();
     if (!text) return;
+    this.connectionSawFrame = true;
     this.connectionMaxSeq = Math.max(this.connectionMaxSeq, frame.seq);
     this.connectionMaxEndSec = Math.max(this.connectionMaxEndSec, frame.endSec);
+    if (frame.type === "final") {
+      // A final supplies a processed-audio boundary, not a transport ACK or proof of text coverage.
+      this.finalizedAudioSec = Math.max(this.finalizedAudioSec, Math.min(frame.endSec, this.sentSamples / this.options.sampleRate));
+    }
+    const startTime = this.mapAudioTime(frame.startSec, "start");
+    const endTime = this.mapAudioTime(frame.endSec, "end");
     const now = Date.now();
     const segment: TranscriptSegment = {
       id: `${this.sessionId}-live-${frame.seq + this.seqOffset}`,
       sessionId: this.sessionId,
       text,
-      startTime: this.clockOffsetSec + frame.startSec,
+      startTime,
       type: frame.type,
       createdAt: now,
-      ...(frame.type === "final" ? { endTime: this.clockOffsetSec + frame.endSec } : {}),
+      ...(frame.type === "final" ? { endTime: this.audioSpans.length > 0 ? Math.max(startTime, endTime) : endTime } : {}),
     };
     for (const callback of frame.type === "final" ? this.finalCallbacks : this.partialCallbacks) callback(segment);
   }
@@ -300,8 +392,58 @@ export class SherpaSTTProvider implements STTProvider {
     for (const callback of this.statusCallbacks) callback(status);
   }
 
-  private noteDrop(): void {
+  private recordAudioSpan(position: AudioInputPosition, workerStart: number, workerEnd: number, durationSec: number): void {
+    const previous = this.audioSpans.at(-1);
+    const sourceEnd = position.startTime + durationSec;
+    if (previous && previous.captureId === position.captureId && position.seq === previous.lastSeq + 1 &&
+      Math.abs(previous.workerEnd - workerStart) < CLOCK_EPSILON && Math.abs(previous.sourceEnd - position.startTime) < CLOCK_EPSILON) {
+      previous.lastSeq = position.seq;
+      previous.workerEnd = workerEnd;
+      previous.sourceEnd = sourceEnd;
+      return;
+    }
+    this.audioSpans.push({ captureId: position.captureId, lastSeq: position.seq, workerStart, workerEnd, sourceStart: position.startTime, sourceEnd });
+  }
+
+  private mapAudioTime(rawSec: number, side: "start" | "end"): number {
+    if (this.audioSpans.length === 0) return this.clockOffsetSec + rawSec;
+    const time = Math.max(0, Math.min(rawSec, this.sentSamples / this.options.sampleRate));
+    // At a discontinuity, a start belongs to the next source span and an end to the previous one.
+    for (const span of this.audioSpans) {
+      const beforeEnd = side === "start" ? time < span.workerEnd - CLOCK_EPSILON : time <= span.workerEnd + CLOCK_EPSILON;
+      if (beforeEnd && time >= span.workerStart - CLOCK_EPSILON) {
+        return span.sourceStart + Math.max(0, Math.min(time - span.workerStart, span.workerEnd - span.workerStart));
+      }
+    }
+    const last = this.audioSpans.at(-1);
+    if (last && time >= last.workerEnd - CLOCK_EPSILON) return last.sourceEnd;
+    // A mixed legacy prefix has no source metadata. Preserve its previous offset-based behaviour.
+    return this.clockOffsetSec + time;
+  }
+
+  private reportUnconfirmedAudio(): void {
+    for (const span of this.audioSpans) {
+      const start = Math.max(span.workerStart, this.finalizedAudioSec);
+      if (span.workerEnd - start <= CLOCK_EPSILON) continue;
+      this.reportAudioGap({
+        stage: "backend_stt", reason: "worker_disconnect", certainty: "possible",
+        startTime: span.sourceStart + start - span.workerStart, endTime: span.sourceEnd,
+      });
+    }
+  }
+
+  private reportAudioGap(gap: AudioGapInput): void {
+    for (const callback of this.audioGapCallbacks) {
+      try { callback(gap); }
+      catch (error) { log.warn("stt audio gap callback failed", { sessionId: this.sessionId, error: String(error) }); }
+    }
+  }
+
+  private noteDrop(position?: AudioInputPosition, durationSec = 0): void {
     this.droppedChunks += 1;
+    if (position && durationSec > 0) {
+      this.reportAudioGap({ stage: "backend_stt", reason: "worker_unavailable", certainty: "observed", startTime: position.startTime, endTime: position.startTime + durationSec });
+    }
     // One warning per outage, not one per 100 ms frame: a worker that is down would otherwise flood
     // the log, and the counter at disconnect already says how much audio was lost.
     if (!this.warnedAboutDrops) {

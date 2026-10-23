@@ -4,10 +4,14 @@ import { DebugPanel } from "./components/DebugPanel";
 import { MindMapView } from "./components/MindMapView";
 import { RecordingControls } from "./components/RecordingControls";
 import { SubtitlePanel } from "./components/SubtitlePanel";
+import { RetrievalRecovery } from "./components/RetrievalRecovery";
+import { AudioGaps } from "./components/AudioGaps";
+import { RecoveryTasks } from "./components/RecoveryTasks";
 import { connect, disconnect } from "./net/connection";
-import { loadHistoryAnswers } from "./net/sessionFile";
 import { useSessionStore } from "./state/sessionStore";
-import { WS_URL } from "./config";
+import { API_BASE, WS_URL } from "./config";
+import { authorizeBrowser } from "./net/api";
+import { stopAllMicrophones } from "./audio/microphone";
 
 /**
  * §42: the map is the primary surface and gets the wider pane; subtitles and Q&A share the
@@ -15,22 +19,30 @@ import { WS_URL } from "./config";
  */
 export function App() {
   const recording = useSessionStore((s) => s.recording);
-  const sessionId = useSessionStore((s) => s.sessionId);
 
   useEffect(() => {
-    connect(WS_URL);
+    connect(WS_URL, () => authorizeBrowser(API_BASE));
     return disconnect;
   }, []);
 
-  // A history opened from a file carries answers the socket cannot replay, so they are read back out of
-  // the store. A live recording needs none of this: its bubbles are the ones being streamed now.
   useEffect(() => {
-    if (recording === "viewing" && sessionId) void loadHistoryAnswers(sessionId);
-  }, [recording, sessionId]);
+    const prepare = () => { stopAllMicrophones(); disconnect(); };
+    const unsubscribe = window.rccDesktop?.onPrepareQuit(prepare);
+    window.addEventListener("beforeunload", prepare);
+    return () => { unsubscribe?.(); window.removeEventListener("beforeunload", prepare); };
+  }, []);
+
+  useEffect(() => {
+    window.rccDesktop?.setCaptureActive(recording === "recording" || recording === "paused");
+  }, [recording]);
 
   return (
     <div className="app">
       <RecordingControls />
+      <RetrievalRecovery />
+      <RetrievalRecovery mode="mindmap" />
+      <AudioGaps />
+      <RecoveryTasks />
       <main className="app__body">
         <section className="app__map">
           <MindMapView />

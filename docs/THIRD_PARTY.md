@@ -152,6 +152,7 @@
 - **替换成本**：低。协议 v1 与传输无关，换传输只改 worker 里的收发循环。
 
 ### 16. sherpa-onnx 流式 Zipformer 双语模型（STT 权重）
+- **2026-10-23 当前安装补充**：按用户选择在 `D:\Apps\实时会议助手-STT-CPU` 准备独立 CPU 服务；模型来自维护者 HF 仓库 `csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20`，固定 revision `98590b7ed6443e77b714204da2757d75e1a642f4`，README 与模型元数据均标 Apache-2.0。仅 int8 三文件、词表/说明及官方测试 WAV，共 199,483,653 bytes；逐文件校验见 `services/stt-worker/cpu-model.json` 和本机模型目录 `checksums.json`。实际硬件为 i5-14400F / 16 GB；当前固定语音结果见 [STT_CPU.md](STT_CPU.md)。下列早期目录、设备及测量保留为历史记录，不代表当前机器仍有那些文件或复用其验收。
 - **来源**：本地目录 `.probe-model/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20`，从 `OPEN_SOURCE_SURVEY.md` §1.1 登记的 GitHub release 资产清单（https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models）下载。目录内 `README.md` 记录了它的上游：torchscript 权重 https://huggingface.co/pfluo/k2fsa-zipformer-chinese-english-mixed，训练代码 icefall `pruned_transducer_stateless7_streaming`。
 - **License**：**Apache-2.0（权重）** —— 就地实测：目录内 `README.md` 的 front-matter 明写 `license: apache-2.0`。代码 Apache-2.0 + 权重 Apache-2.0，商用路线干净（Rule 4 要求权重单独核对，故单列此条）。
 - **版本 / 体积**：整目录 531MB（含 fp32 与 int8 两套权重）。worker 的 `--model-dir` 按 sherpa-onnx 命名约定自动挑选，**int8 优先**：encoder 181.9MB + decoder 13.1MB + joiner 3.2MB ≈ **198MB**，这是 Phase 5 实测 RTF 0.126/0.168 所用的组合。
@@ -163,6 +164,7 @@
 ## 交付期新增：再分发的运行时与构建期系统组件（2026-10-22，架构决策 §6.5 D-36）
 
 ### 17. Node.js 运行时二进制（安装目录自带的 `runtime\node.exe`）
+- **2026-10-22 桌面交付更新**：下列 v24.18.1 与缺少 LICENSE 的描述为历史记录。当前打包使用已实测的 **v26.7.0 Windows x64**（`process.execPath`），`stageNode` 同时复制相邻 LICENSE，缺失则拒绝打包，并运行 `node:sqlite` 内存数据库探针。桌面位置为 `resources/backend/runtime/node.exe`，不依赖系统 Node。安装态已检查 Node 许可证存在。此前核心包的许可补齐见 `docs/releases/v0.1.0-preview.2.md`。
 - **来源**：https://nodejs.org 的 Windows x64 官方二进制；本机实测被拷贝的那一枚在 `D:\Enviroment Configuration\node.js\node.exe`。
 - **License**：**MIT**（Node.js 项目口径，`node.exe` 内还捆 OpenSSL 等组件，其声明集中在上游 `LICENSE` 文件里）。**本条有一格没做到，必须写在这里而不是含糊过去**：本机这枚 `node.exe` 旁边**没有 LICENSE 文件**（实测同目录只有 `corepack`/`npm`/`npx`/`node.exe` 等，`LICENSE`、`LICENSE.txt` 均不存在），而 `tools/package.mjs` 只拷贝 `process.execPath` 本身，所以现在的安装包是"再分发二进制"而**未内嵌其许可声明全文**。MIT 的条件正是"在作品的全部副本中包含此许可声明"，因此在把安装包交给任何人之前，应把上游 `LICENSE` 文本放进安装目录的 `runtime\`（本机离线取不到，需要一次网络获取；这一格已作为交付前置待办登记，不是已完成）。
 - **版本**：**v24.18.1** —— 实测而非记录：脚本从 `process.execPath` 取二进制、从 `process.version` 取版本号，两者同一个进程，所以"打包用的 node"与"登记下来的版本"不可能是两个东西。
@@ -171,6 +173,24 @@
 - **为什么选它**：目标机不应假设装了 Node（这是要双击使用的本地应用），而依赖树里带原生二进制的 `onnxruntime-node@1.30.0`（第 13 条）只认官方 Node 的 ABI；自带 node.exe 是让"装完就能跑"成立的唯一形状，且它同时是 §54 Rule 3"用户不需要装任何东西"的落地方式。
 - **替代方案及淘汰理由**：让用户自装 Node（把安装体验变成前置条件，且用户那边的版本会直接改变原生依赖的可用性——正是本项目在 D-31 之后反复用控制组防的那类"环境差异伪装成功能问题"）；`node --experimental-sea-config`（single executable application，要 postject 步骤、换 node 版本就得重做，收益只是"少一个目录"，且崩溃时的路径可读性变差）；`pkg`（同类，且上游已进入维护停滞）；Bun（Rule 4 意义上的代价最大：整棵依赖树要重新核对，npm 与原生包的兼容矩阵不是本项目能背书的东西）。
 - **替换成本**：低——`runtime\node.exe` 只被那三个 `.bat` 引用；但换的是整个安装形态的宿主，验收下限是重跑 launcher 链（`.scratch/live-launcher.mjs`，8 条）与两次安装态真装真跑。
+
+### 18. Electron（桌面运行时）
+
+- **来源**：[Electron 官方仓库](https://github.com/electron/electron)、npm `electron`；二进制来自官方 GitHub Release，SHA-256 与锁定 npm 包附带的 checksums.json 核对一致。
+- **版本 / License**：**45.0.0 / MIT**；同时携带 Chromium 等组件的 `LICENSES.chromium.html`。实测 Chromium 156.0.8078.48、内置 Node 24.22.0。
+- **作用 / 层级**：独立桌面窗口、受限 preload、权限管理和 Node 后端子进程管理。未修改 Electron 源码。
+- **为什么选择**：按用户优先方案复用现有 React、浏览器音频与 Node 业务模块；运行环境随包交付。在当前机器上没有发现阻止实施的兼容性问题。
+- **兼容性边界**：Electron 主进程的 SQLite 探针可用；业务仍使用独立 Node 26.7.0，不把探针通过当作整个后端及可选原生依赖在 Electron 中已经验证。核心包不携带 ONNX embedding 运行时。
+- **替代方案**：Tauri/WebView2 需另验证系统 WebView2 与外置 Node 的交付组合；当前没有足以抵消切换成本的证据。浏览器启动器不能满足独立窗口目标。
+- **代价**：核心桌面暂存约 484 MiB、安装包约 196 MiB；Windows 预览程序未签名，无自动更新。
+
+### 19. Playwright（仅开发验证）
+
+- **来源**：[Playwright 官方仓库](https://github.com/microsoft/playwright)、npm `@playwright/test`。
+- **版本 / License**：**1.64.1 / Apache-2.0**。
+- **作用**：驱动实际 Electron 主进程/渲染页面，验证实际业务、生命周期与固定文件虚拟麦克风传输。该版本使用已安装 Electron，不需要额外下载测试浏览器。
+- **为什么选择 / 替代方案**：原接口测试无法覆盖窗口激活、渲染进程和 Chromium 音频；Playwright 提供现成 Electron 测试能力，避免自建桌面自动化框架。人工硬件测试仍需另做。
+- **分发边界**：只在 devDependencies 中，未复制进安装包；不把自动选择权限对话框写成真人权限验收。
 
 ### 交付期用到的系统自带组件（不构成"新增第三方项目"，登记是为了可追溯）
 这三个都在构建机上使用，**不随包分发、不进产品依赖**，因此不属于 §54 Rule 4 的登记义务范围；登记在此只回答一个问题：**这台机器上那个 `Setup.exe` 到底是用什么造出来的**。
